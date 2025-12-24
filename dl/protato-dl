@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+#
+# Protato Downloader Script
+# 
+# This script downloads and caches the protato binary, then executes it.
+# It's designed to be used in development and CI environments.
+#
+# Configuration via environment variables:
+#   PROTATO_VERSION         - Version to download (default: v0.9.0)
+#   PROTATO_DOWNLOAD_METHOD - Download method: github, aws, all (default: all)
+#   XDG_CACHE_HOME          - Cache directory (default: ~/.cache)
+#
+# Usage:
+#   ./protato-dl [protato args...]
+#   ./protato-dl version
+#   ./protato-dl pull team/service
+#
+
+set -euo pipefail
+
+# Configuration
+PROTATO_VERSION="${PROTATO_VERSION:-v0.9.0}"
+PROTATO_DOWNLOAD_METHOD="${PROTATO_DOWNLOAD_METHOD:-all}"
+PROTATO_GITHUB_REPO="${PROTATO_GITHUB_REPO:-rahulagarwal0605/protato}"
+
+# Cache directory
+USER_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
+PROTATO_CACHE_DIR="${USER_CACHE_DIR}/protato"
+PROTATO_EXE_DIR="${PROTATO_CACHE_DIR}/protato-${PROTATO_VERSION}"
+PROTATO_EXE="${PROTATO_EXE_DIR}/protato"
+
+# Determine OS and architecture
+get_os() {
+    case "$(uname -s)" in
+        Darwin*) echo "darwin" ;;
+        Linux*)  echo "linux" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+get_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "amd64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+OS="$(get_os)"
+ARCH="$(get_arch)"
+BINARY_NAME="protato-${OS}-${ARCH}"
+
+if [[ "$OS" == "windows" ]]; then
+    PROTATO_EXE="${PROTATO_EXE}.exe"
+    BINARY_NAME="${BINARY_NAME}.exe"
+fi
+
+# Logging
+log_info() {
+    echo "[protato-dl] $*" >&2
+}
+
+log_error() {
+    echo "[protato-dl] ERROR: $*" >&2
+}
+
+log_debug() {
+    if [[ "${PROTATO_DEBUG:-}" == "1" ]]; then
+        echo "[protato-dl] DEBUG: $*" >&2
+    fi
+}
+
+# Check if GitHub download is available
+protato_github_download_enabled() {
+    # Check if gh CLI is installed
+    if ! command -v gh &>/dev/null; then
+        log_debug "gh CLI not found"
+        return 1
+    fi
+    
+    # Check if authenticated
+    if gh auth token &>/dev/null; then
+        return 0
+    fi
+    
+    # Allow interactive auth if terminal
+    if [[ -t 0 ]]; then
+        return 0
+    fi
+    
+    log_debug "gh not authenticated and not interactive"
+    return 1
+}
+
+# Download from GitHub releases
+protato_github_download() {
+    log_info "Downloading from GitHub..."
+    
+    # Authenticate if needed
+    if ! gh auth token &>/dev/null; then
+        log_info "GitHub authentication required"
+        gh auth login
+    fi
+    
+    # Create temp directory
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    trap "rm -rf '$temp_dir'" EXIT
+    
+    # Download release
+    log_info "Downloading ${BINARY_NAME}.tar.gz from release protato/${PROTATO_VERSION}"
+    
+    gh release download "protato/${PROTATO_VERSION}" \
+        --repo "${PROTATO_GITHUB_REPO}" \
+        --pattern "${BINARY_NAME}.tar.gz" \
+        --output "${temp_dir}/protato.tar.gz" \
+        2>/dev/null || {
+            # Try without the protato/ prefix
+            gh release download "${PROTATO_VERSION}" \
+                --repo "${PROTATO_GITHUB_REPO}" \
+                --pattern "${BINARY_NAME}.tar.gz" \
+                --output "${temp_dir}/protato.tar.gz"
+        }
+    
+    # Extract
+    mkdir -p "${PROTATO_EXE_DIR}"
+    tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}"
+    
+    # Handle different archive structures
+    if [[ -f "${PROTATO_EXE_DIR}/${BINARY_NAME}" ]]; then
+        mv "${PROTATO_EXE_DIR}/${BINARY_NAME}" "${PROTATO_EXE}"
+    elif [[ -f "${PROTATO_EXE_DIR}/protato" ]]; then
+        # Already correct name
+        :
+    fi
+    
+    chmod +x "${PROTATO_EXE}"
+    log_info "Downloaded protato ${PROTATO_VERSION}"
+}
+
+# Download using curl/wget (public releases)
+protato_http_download() {
+    log_info "Downloading from GitHub releases via HTTP..."
+    
+    local url="https://github.com/${PROTATO_GITHUB_REPO}/releases/download/${PROTATO_VERSION}/${BINARY_NAME}.tar.gz"
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    trap "rm -rf '$temp_dir'" EXIT
+    
+    # Download
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$url" -o "${temp_dir}/protato.tar.gz"
+    elif command -v wget &>/dev/null; then
+        wget -q "$url" -O "${temp_dir}/protato.tar.gz"
+    else
+        log_error "Neither curl nor wget found"
+        return 1
+    fi
+    
+    # Extract
+    mkdir -p "${PROTATO_EXE_DIR}"
+    tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}"
+    
+    # Handle different archive structures
+    if [[ -f "${PROTATO_EXE_DIR}/${BINARY_NAME}" ]]; then
+        mv "${PROTATO_EXE_DIR}/${BINARY_NAME}" "${PROTATO_EXE}"
+    fi
+    
+    chmod +x "${PROTATO_EXE}"
+    log_info "Downloaded protato ${PROTATO_VERSION}"
+}
+
+# Try all download methods
+protato_all_download() {
+    # Try HTTP first (simplest, works for public repos)
+    if protato_http_download 2>/dev/null; then
+        return 0
+    fi
+    
+    # Try GitHub CLI
+    if protato_github_download_enabled && protato_github_download; then
+        return 0
+    fi
+    
+    log_error "All download methods failed"
+    return 1
+}
+
+# Main download function
+download_protato() {
+    log_info "Downloading protato ${PROTATO_VERSION} for ${OS}/${ARCH}"
+    
+    mkdir -p "${PROTATO_CACHE_DIR}"
+    
+    case "${PROTATO_DOWNLOAD_METHOD}" in
+        github)
+            protato_github_download
+            ;;
+        http)
+            protato_http_download
+            ;;
+        all)
+            protato_all_download
+            ;;
+        *)
+            log_error "Unknown download method: ${PROTATO_DOWNLOAD_METHOD}"
+            return 1
+            ;;
+    esac
+}
+
+# Main
+main() {
+    # Fast path: binary already cached
+    if [[ -x "${PROTATO_EXE}" ]]; then
+        log_debug "Using cached binary: ${PROTATO_EXE}"
+        exec "${PROTATO_EXE}" "$@"
+    fi
+    
+    # Slow path: download
+    download_protato
+    
+    # Verify download
+    if [[ ! -x "${PROTATO_EXE}" ]]; then
+        log_error "Download failed: ${PROTATO_EXE} not found or not executable"
+        exit 1
+    fi
+    
+    # Execute
+    exec "${PROTATO_EXE}" "$@"
+}
+
+main "$@"
+

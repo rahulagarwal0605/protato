@@ -1,0 +1,35 @@
+# Binaries
+protato
+protato.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build directories
+/build/
+/dist/
+
+# Test artifacts
+*.test
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Debug
+debug
+*.log
+
