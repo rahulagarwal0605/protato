@@ -451,12 +451,33 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 
 // Push pushes a commit to the remote registry.
 func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
+	// Get the default branch from HEAD
+	branch := r.getDefaultBranch(ctx)
+	
 	return r.repo.Push(ctx, git.PushOptions{
 		Remote: "origin",
 		RefSpecs: []git.Refspec{
-			git.Refspec(fmt.Sprintf("%s:refs/heads/master", hash)),
+			git.Refspec(fmt.Sprintf("%s:refs/heads/%s", hash, branch)),
 		},
 	})
+}
+
+// getDefaultBranch returns the default branch name (main, master, etc.)
+func (r *Cache) getDefaultBranch(ctx context.Context) string {
+	// Try to get the branch from HEAD reference
+	if headRef, err := r.repo.RevHash(ctx, "HEAD"); err == nil {
+		// Check common branch names
+		for _, branch := range []string{"main", "master"} {
+			if branchHash, err := r.repo.RevHash(ctx, "refs/remotes/origin/"+branch); err == nil {
+				if headRef == branchHash {
+					return branch
+				}
+			}
+		}
+	}
+	
+	// Default to master if we can't detect
+	return "master"
 }
 
 // URL returns the registry URL.
