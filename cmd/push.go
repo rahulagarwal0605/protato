@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -21,155 +20,209 @@ type PushCmd struct {
 	NoValidate bool          `help:"Skip proto validation" name:"no-validate"`
 }
 
+// pushContext holds the context for a push operation.
+type pushContext struct {
+	wctx          *WorkspaceContext
+	reg           *registry.Cache
+	repoURL       string
+	currentCommit git.Hash
+	ownedProjects []local.ProjectPath
+}
+
 // Run executes the push command.
 func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	if globals.RegistryURL == "" {
-		return fmt.Errorf("registry URL not configured")
+	pctx, err := c.preparePushContext(ctx, globals, log)
+	if err != nil {
+		return err
 	}
 
-	// Get current directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get cwd: %w", err)
-	}
-
-	// Open Git repository
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
-	}
-
-	// Open workspace
-	ws, err := local.Open(repo.Root(), local.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open workspace: %w", err)
-	}
-
-	// Get owned projects
-	ownedProjects, err := ws.OwnedProjects()
-	if err != nil {
-		return fmt.Errorf("get owned projects: %w", err)
-	}
-	if len(ownedProjects) == 0 {
+	if len(pctx.ownedProjects) == 0 {
 		log.Info().Msg("No owned projects to push")
 		return nil
 	}
 
-	// Get current commit
-	currentCommit, err := repo.RevHash(ctx, "HEAD")
+	return c.pushWithRetries(ctx, pctx, log)
+}
+
+// preparePushContext initializes all resources needed for push.
+func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions, log *zerolog.Logger) (*pushContext, error) {
+	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
 	if err != nil {
-		return fmt.Errorf("get HEAD: %w", err)
+		return nil, err
 	}
 
-	// Get repository URL
-	repoURL, err := repo.GetRemoteURL(ctx, "origin")
+	ownedProjects, err := wctx.WS.OwnedProjects()
 	if err != nil {
-		return fmt.Errorf("get remote URL: %w", err)
-	}
-	repoURL = git.NormalizeRemoteURL(repoURL)
-
-	// Open registry
-	reg, err := registry.Open(ctx, globals.CacheDir, registry.Config{
-		URL: globals.RegistryURL,
-	}, log)
-	if err != nil {
-		return fmt.Errorf("open registry: %w", err)
+		return nil, fmt.Errorf("get owned projects: %w", err)
 	}
 
-	// Push with retries
+	currentCommit, err := wctx.Repo.RevHash(ctx, "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("get HEAD: %w", err)
+	}
+
+	repoURL := GetRepoURL(ctx, wctx.Repo, log)
+	if repoURL == "" {
+		return nil, fmt.Errorf("failed to get remote URL")
+	}
+
+	reg, err := OpenRegistry(ctx, globals, log)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pushContext{
+		wctx:          wctx,
+		reg:           reg,
+		repoURL:       repoURL,
+		currentCommit: currentCommit,
+		ownedProjects: ownedProjects,
+	}, nil
+}
+
+// pushWithRetries attempts to push with optimistic locking retries.
+func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext, log *zerolog.Logger) error {
 	for attempt := 1; attempt <= c.Retries+1; attempt++ {
 		log.Debug().Int("attempt", attempt).Msg("Push attempt")
 
-		// Refresh registry
-		if err := reg.Refresh(ctx); err != nil {
-			return fmt.Errorf("refresh registry: %w", err)
+		err := c.attemptPush(ctx, pctx, log)
+		if err == nil {
+			return nil
 		}
 
-		snapshot, err := reg.Snapshot(ctx)
-		if err != nil {
-			return fmt.Errorf("get snapshot: %w", err)
-		}
-
-		// Check ownership claims (using registry path with service prefix)
-		for _, project := range ownedProjects {
-			registryPath := ws.RegistryProjectPath(project)
-			if err := checkProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
-				return err
-			}
-		}
-
-		// Prepare updates
-		var finalSnapshot git.Hash
-		var registryProjects []registry.ProjectPath
-		for _, project := range ownedProjects {
-			// Get the registry path (with service prefix if configured)
-			registryPath := ws.RegistryProjectPath(project)
-			registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
-
-			log.Info().
-				Str("local", string(project)).
-				Str("registry", string(registryPath)).
-				Msg("Preparing project")
-
-			// List project files from owned directory
-			files, err := ws.ListOwnedProjectFiles(project)
-			if err != nil {
-				return fmt.Errorf("list files %s: %w", project, err)
-			}
-
-			// Convert to registry format
-			var regFiles []registry.LocalProjectFile
-			for _, f := range files {
-				regFiles = append(regFiles, registry.LocalProjectFile{
-					Path:      f.Path,
-					LocalPath: f.AbsolutePath,
-				})
-			}
-
-			// Update project in registry with prefixed path
-			res, err := reg.SetProject(ctx, &registry.SetProjectRequest{
-				Project: &registry.Project{
-					Path:          registry.ProjectPath(registryPath),
-					Commit:        currentCommit,
-					RepositoryURL: repoURL,
-				},
-				Files:    regFiles,
-				Snapshot: snapshot,
-			})
-			if err != nil {
-				return fmt.Errorf("set project %s: %w", registryPath, err)
-			}
-
-			finalSnapshot = res.Snapshot
-			snapshot = finalSnapshot // Chain commits
-		}
-
-		// Validate if enabled
-		if !c.NoValidate && finalSnapshot != "" {
-			log.Info().Msg("Validating proto files")
-			if err := protoc.ValidateProtos(ctx, reg, finalSnapshot, registryProjects, log); err != nil {
-				return fmt.Errorf("validation failed: %w", err)
-			}
-		}
-
-		// Push
-		if finalSnapshot != "" {
-			log.Info().Str("snapshot", finalSnapshot.Short()).Msg("Pushing to registry")
-			err = reg.Push(ctx, finalSnapshot)
-			if err == nil {
-				log.Info().Msg("Push complete")
-				return nil
-			}
-
+		if attempt < c.Retries+1 {
 			log.Warn().Err(err).Msg("Push failed, retrying")
-			if attempt < c.Retries+1 {
-				time.Sleep(c.RetryDelay * time.Duration(attempt))
-				continue
-			}
+			time.Sleep(c.RetryDelay * time.Duration(attempt))
+			continue
 		}
 
-		return fmt.Errorf("push failed after %d attempts", attempt)
+		return fmt.Errorf("push failed after %d attempts: %w", attempt, err)
 	}
 
 	return fmt.Errorf("push failed after %d retries", c.Retries)
+}
+
+// attemptPush performs a single push attempt.
+func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext, log *zerolog.Logger) error {
+	if err := pctx.reg.Refresh(ctx); err != nil {
+		return fmt.Errorf("refresh registry: %w", err)
+	}
+
+	snapshot, err := pctx.reg.Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("get snapshot: %w", err)
+	}
+
+	if err := c.checkOwnershipClaims(ctx, pctx, snapshot, log); err != nil {
+		return err
+	}
+
+	finalSnapshot, registryProjects, err := c.updateProjects(ctx, pctx, snapshot, log)
+	if err != nil {
+		return err
+	}
+
+	if finalSnapshot == "" {
+		return nil
+	}
+
+	if err := c.validateIfEnabled(ctx, pctx, finalSnapshot, registryProjects, log); err != nil {
+		return err
+	}
+
+	return c.pushToRemote(ctx, pctx, finalSnapshot, log)
+}
+
+// checkOwnershipClaims verifies all projects can be pushed.
+func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) error {
+	for _, project := range pctx.ownedProjects {
+		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
+		if err := CheckProjectClaim(ctx, pctx.reg, snapshot, pctx.repoURL, string(registryPath), log); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateProjects updates all owned projects in the registry.
+func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) (git.Hash, []registry.ProjectPath, error) {
+	var finalSnapshot git.Hash
+	var registryProjects []registry.ProjectPath
+
+	for _, project := range pctx.ownedProjects {
+		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
+		registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
+
+		log.Info().
+			Str("local", string(project)).
+			Str("registry", string(registryPath)).
+			Msg("Preparing project")
+
+		newSnapshot, err := c.updateSingleProject(ctx, pctx, project, registryPath, snapshot)
+		if err != nil {
+			return "", nil, err
+		}
+
+		finalSnapshot = newSnapshot
+		snapshot = finalSnapshot
+	}
+
+	return finalSnapshot, registryProjects, nil
+}
+
+// updateSingleProject updates a single project in the registry.
+func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushContext, localProject local.ProjectPath, registryPath local.ProjectPath, snapshot git.Hash) (git.Hash, error) {
+	files, err := pctx.wctx.WS.ListOwnedProjectFiles(localProject)
+	if err != nil {
+		return "", fmt.Errorf("list files %s: %w", localProject, err)
+	}
+
+	regFiles := make([]registry.LocalProjectFile, len(files))
+	for i, f := range files {
+		regFiles[i] = registry.LocalProjectFile{
+			Path:      f.Path,
+			LocalPath: f.AbsolutePath,
+		}
+	}
+
+	res, err := pctx.reg.SetProject(ctx, &registry.SetProjectRequest{
+		Project: &registry.Project{
+			Path:          registry.ProjectPath(registryPath),
+			Commit:        pctx.currentCommit,
+			RepositoryURL: pctx.repoURL,
+		},
+		Files:    regFiles,
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		return "", fmt.Errorf("set project %s: %w", registryPath, err)
+	}
+
+	return res.Snapshot, nil
+}
+
+// validateIfEnabled runs proto validation if enabled.
+func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) error {
+	if c.NoValidate {
+		return nil
+	}
+
+	log.Info().Msg("Validating proto files")
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, log); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// pushToRemote pushes the final snapshot to the remote registry.
+func (c *PushCmd) pushToRemote(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) error {
+	log.Info().Str("snapshot", snapshot.Short()).Msg("Pushing to registry")
+
+	if err := pctx.reg.Push(ctx, snapshot); err != nil {
+		return err
+	}
+
+	log.Info().Msg("Push complete")
+	return nil
 }

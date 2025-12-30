@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/rs/zerolog"
 
@@ -20,201 +19,203 @@ type PullCmd struct {
 	NoDeps   bool     `help:"Don't pull dependencies" name:"no-deps"`
 }
 
+// pullPlan represents the plan for pulling a project.
+type pullPlan struct {
+	project  registry.ProjectPath
+	files    []registry.ProjectFile
+	toDelete []string
+}
+
 // Run executes the pull command.
 func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	if globals.RegistryURL == "" {
-		return fmt.Errorf("registry URL not configured")
-	}
-
-	// Get current directory
-	cwd, err := os.Getwd()
+	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{CreateIfMissing: true})
 	if err != nil {
-		return fmt.Errorf("get cwd: %w", err)
+		return err
 	}
 
-	// Open Git repository
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{}, log)
+	reg, err := OpenAndRefreshRegistry(ctx, globals, log)
 	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
+		return err
 	}
 
-	// Open workspace
-	ws, err := local.Open(repo.Root(), local.OpenOptions{CreateIfMissing: true}, log)
-	if err != nil {
-		return fmt.Errorf("open workspace: %w", err)
-	}
-
-	// Open registry
-	reg, err := registry.Open(ctx, globals.CacheDir, registry.Config{
-		URL: globals.RegistryURL,
-	}, log)
-	if err != nil {
-		return fmt.Errorf("open registry: %w", err)
-	}
-
-	// Refresh registry
-	log.Info().Msg("Refreshing registry")
-	if err := reg.Refresh(ctx); err != nil {
-		return fmt.Errorf("refresh registry: %w", err)
-	}
-
-	// Get snapshot
 	snapshot, err := reg.Snapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("get snapshot: %w", err)
 	}
 	log.Debug().Str("snapshot", snapshot.Short()).Msg("Using registry snapshot")
 
-	// Determine projects to pull
-	var projectsToPull []registry.ProjectPath
+	projectsToPull, err := c.resolveProjects(ctx, wctx.WS, reg, snapshot, log)
+	if err != nil {
+		return err
+	}
+
+	if len(projectsToPull) == 0 {
+		log.Info().Msg("No projects to pull")
+		return nil
+	}
+
+	plans, err := c.createPullPlans(ctx, wctx.WS, reg, snapshot, projectsToPull, log)
+	if err != nil {
+		return err
+	}
+
+	return c.executePullPlans(ctx, wctx.WS, reg, snapshot, plans, log)
+}
+
+// resolveProjects determines which projects need to be pulled.
+func (c *PullCmd) resolveProjects(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, log *zerolog.Logger) ([]registry.ProjectPath, error) {
+	projectsToPull := c.getInitialProjects(ws, log)
+	ownedPaths := c.buildOwnedPathsSet(ws)
+
+	if !c.NoDeps && len(projectsToPull) > 0 {
+		projectsToPull = c.discoverDependencies(ctx, reg, snapshot, projectsToPull, log)
+	}
+
+	return c.filterOwnedProjects(projectsToPull, ownedPaths), nil
+}
+
+// getInitialProjects returns the initial list of projects to pull.
+func (c *PullCmd) getInitialProjects(ws *local.Workspace, log *zerolog.Logger) []registry.ProjectPath {
 	if len(c.Projects) > 0 {
-		for _, p := range c.Projects {
-			projectsToPull = append(projectsToPull, registry.ProjectPath(p))
+		projects := make([]registry.ProjectPath, len(c.Projects))
+		for i, p := range c.Projects {
+			projects[i] = registry.ProjectPath(p)
 		}
-	} else {
-		// Pull all received projects
-		received, err := ws.ReceivedProjects()
-		if err != nil {
-			return fmt.Errorf("get received projects: %w", err)
-		}
-		for _, r := range received {
-			projectsToPull = append(projectsToPull, registry.ProjectPath(r.Project))
-		}
-		if len(projectsToPull) == 0 {
-			log.Info().Msg("No projects to pull")
-			return nil
-		}
+		return projects
 	}
 
-	// Build set of owned registry paths for filtering
-	ownedRegistryPaths := make(map[string]bool)
+	received, err := ws.ReceivedProjects()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to get received projects")
+		return nil
+	}
+
+	projects := make([]registry.ProjectPath, len(received))
+	for i, r := range received {
+		projects[i] = registry.ProjectPath(r.Project)
+	}
+	return projects
+}
+
+// buildOwnedPathsSet builds a set of owned project paths.
+func (c *PullCmd) buildOwnedPathsSet(ws *local.Workspace) map[string]bool {
+	ownedPaths := make(map[string]bool)
 	ownedProjects, _ := ws.OwnedProjects()
+
 	for _, p := range ownedProjects {
-		// Add both local path and registry path (with service prefix)
-		ownedRegistryPaths[string(p)] = true
-		ownedRegistryPaths[string(ws.RegistryProjectPath(p))] = true
+		ownedPaths[string(p)] = true
+		ownedPaths[string(ws.RegistryProjectPath(p))] = true
 	}
 
-	// Phase 1: Discover dependencies
-	if !c.NoDeps {
-		log.Info().Msg("Discovering dependencies")
-		allProjects, err := protoc.DiscoverDependencies(ctx, reg, snapshot, projectsToPull, log)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to discover dependencies")
-		} else {
-			// Filter out owned projects (check both local and registry paths)
-			var newProjects []registry.ProjectPath
-			for _, p := range allProjects {
-				if !ownedRegistryPaths[string(p)] {
-					newProjects = append(newProjects, p)
-				}
-			}
-			projectsToPull = newProjects
+	return ownedPaths
+}
+
+// discoverDependencies discovers and adds transitive dependencies.
+func (c *PullCmd) discoverDependencies(ctx context.Context, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) []registry.ProjectPath {
+	log.Info().Msg("Discovering dependencies")
+
+	allProjects, err := protoc.DiscoverDependencies(ctx, reg, snapshot, projects, log)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to discover dependencies")
+		return projects
+	}
+
+	return allProjects
+}
+
+// filterOwnedProjects removes owned projects from the list.
+func (c *PullCmd) filterOwnedProjects(projects []registry.ProjectPath, ownedPaths map[string]bool) []registry.ProjectPath {
+	var filtered []registry.ProjectPath
+	for _, p := range projects {
+		if !ownedPaths[string(p)] {
+			filtered = append(filtered, p)
 		}
 	}
+	return filtered
+}
 
-	// Phase 2: Plan changes
-	type pullPlan struct {
-		project  registry.ProjectPath
-		files    []registry.ProjectFile
-		toDelete []string
-	}
+// createPullPlans creates execution plans for each project.
+func (c *PullCmd) createPullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) ([]pullPlan, error) {
 	var plans []pullPlan
 
-	for _, project := range projectsToPull {
-		// Skip owned projects (check both local and registry paths)
-		if ownedRegistryPaths[string(project)] {
-			log.Debug().Str("project", string(project)).Msg("Skipping owned project")
-			continue
-		}
-
-		// List files in registry
-		filesRes, err := reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
-			Project:  project,
-			Snapshot: snapshot,
-		})
+	for _, project := range projects {
+		plan, err := c.createProjectPlan(ctx, ws, reg, snapshot, project)
 		if err != nil {
-			return fmt.Errorf("list project files %s: %w", project, err)
+			return nil, err
 		}
 
-		// List local files in vendor directory
-		localFiles, err := ws.ListVendorProjectFiles(local.ProjectPath(project))
-		if err != nil {
-			return fmt.Errorf("list local files %s: %w", project, err)
+		if err := c.validateDeletions(plan, log); err != nil {
+			return nil, err
 		}
 
-		// Build set of registry files
-		registryFileSet := make(map[string]bool)
-		for _, f := range filesRes.Files {
-			registryFileSet[f.Path] = true
-		}
-
-		// Find files to delete
-		var toDelete []string
-		for _, lf := range localFiles {
-			if !registryFileSet[lf.Path] {
-				toDelete = append(toDelete, lf.Path)
-			}
-		}
-
-		if len(toDelete) > 0 && !c.Force {
-			log.Error().
-				Str("project", string(project)).
-				Int("count", len(toDelete)).
-				Msg("Would delete files. Use --force to proceed")
-			return fmt.Errorf("would delete %d files in %s", len(toDelete), project)
-		}
-
-		plans = append(plans, pullPlan{
-			project:  project,
-			files:    filesRes.Files,
-			toDelete: toDelete,
-		})
+		plans = append(plans, plan)
 	}
 
-	// Phase 3: Execute
-	var totalChanged, totalDeleted int
-	for _, plan := range plans {
-		log.Info().
+	return plans, nil
+}
+
+// createProjectPlan creates a pull plan for a single project.
+func (c *PullCmd) createProjectPlan(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, project registry.ProjectPath) (pullPlan, error) {
+	filesRes, err := reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
+		Project:  project,
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		return pullPlan{}, fmt.Errorf("list project files %s: %w", project, err)
+	}
+
+	localFiles, err := ws.ListVendorProjectFiles(local.ProjectPath(project))
+	if err != nil {
+		return pullPlan{}, fmt.Errorf("list local files %s: %w", project, err)
+	}
+
+	toDelete := c.findFilesToDelete(filesRes.Files, localFiles)
+
+	return pullPlan{
+		project:  project,
+		files:    filesRes.Files,
+		toDelete: toDelete,
+	}, nil
+}
+
+// findFilesToDelete finds local files not in the registry.
+func (c *PullCmd) findFilesToDelete(regFiles []registry.ProjectFile, localFiles []local.ProjectFile) []string {
+	registryFileSet := make(map[string]bool)
+	for _, f := range regFiles {
+		registryFileSet[f.Path] = true
+	}
+
+	var toDelete []string
+	for _, lf := range localFiles {
+		if !registryFileSet[lf.Path] {
+			toDelete = append(toDelete, lf.Path)
+		}
+	}
+
+	return toDelete
+}
+
+// validateDeletions checks if deletions are allowed.
+func (c *PullCmd) validateDeletions(plan pullPlan, log *zerolog.Logger) error {
+	if len(plan.toDelete) > 0 && !c.Force {
+		log.Error().
 			Str("project", string(plan.project)).
-			Int("files", len(plan.files)).
-			Msg("Pulling project")
+			Int("count", len(plan.toDelete)).
+			Msg("Would delete files. Use --force to proceed")
+		return fmt.Errorf("would delete %d files in %s", len(plan.toDelete), plan.project)
+	}
+	return nil
+}
 
-		recv := ws.ReceiveProject(&local.ReceiveProjectRequest{
-			Project:  local.ProjectPath(plan.project),
-			Snapshot: snapshot,
-		})
+// executePullPlans executes all pull plans.
+func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plans []pullPlan, log *zerolog.Logger) error {
+	var totalChanged, totalDeleted int
 
-		// Pull files
-		for _, file := range plan.files {
-			w, err := recv.CreateFile(file.Path)
-			if err != nil {
-				return fmt.Errorf("create file %s: %w", file.Path, err)
-			}
-
-			if err := reg.ReadProjectFile(ctx, file, w); err != nil {
-				w.Close()
-				return fmt.Errorf("read file %s: %w", file.Path, err)
-			}
-
-			if err := w.Close(); err != nil {
-				return fmt.Errorf("close file %s: %w", file.Path, err)
-			}
-		}
-
-		// Delete files
-		for _, path := range plan.toDelete {
-			if err := recv.DeleteFile(path); err != nil {
-				log.Warn().Err(err).Str("path", path).Msg("Failed to delete file")
-			}
-		}
-
-		// Finish
-		stats, err := recv.Finish()
+	for _, plan := range plans {
+		stats, err := c.executeProjectPull(ctx, ws, reg, snapshot, plan, log)
 		if err != nil {
-			return fmt.Errorf("finish receive: %w", err)
+			return err
 		}
-
 		totalChanged += stats.FilesChanged
 		totalDeleted += stats.FilesDeleted
 	}
@@ -226,4 +227,54 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 		Msg("Pull complete")
 
 	return nil
+}
+
+// executeProjectPull pulls a single project.
+func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plan pullPlan, log *zerolog.Logger) (*local.ReceiveStats, error) {
+	log.Info().
+		Str("project", string(plan.project)).
+		Int("files", len(plan.files)).
+		Msg("Pulling project")
+
+	recv := ws.ReceiveProject(&local.ReceiveProjectRequest{
+		Project:  local.ProjectPath(plan.project),
+		Snapshot: snapshot,
+	})
+
+	if err := c.pullFiles(ctx, reg, recv, plan.files); err != nil {
+		return nil, err
+	}
+
+	c.deleteFiles(recv, plan.toDelete, log)
+
+	return recv.Finish()
+}
+
+// pullFiles downloads files from the registry.
+func (c *PullCmd) pullFiles(ctx context.Context, reg *registry.Cache, recv *local.ProjectReceiver, files []registry.ProjectFile) error {
+	for _, file := range files {
+		w, err := recv.CreateFile(file.Path)
+		if err != nil {
+			return fmt.Errorf("create file %s: %w", file.Path, err)
+		}
+
+		if err := reg.ReadProjectFile(ctx, file, w); err != nil {
+			w.Close()
+			return fmt.Errorf("read file %s: %w", file.Path, err)
+		}
+
+		if err := w.Close(); err != nil {
+			return fmt.Errorf("close file %s: %w", file.Path, err)
+		}
+	}
+	return nil
+}
+
+// deleteFiles removes files that no longer exist in the registry.
+func (c *PullCmd) deleteFiles(recv *local.ProjectReceiver, toDelete []string, log *zerolog.Logger) {
+	for _, path := range toDelete {
+		if err := recv.DeleteFile(path); err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("Failed to delete file")
+		}
+	}
 }

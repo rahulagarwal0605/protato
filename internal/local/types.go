@@ -21,10 +21,11 @@ type DirectoryConfig struct {
 
 // Config represents the protato.yaml configuration.
 type Config struct {
-	Service     string          `yaml:"service,omitempty"`     // Service name for registry namespacing
-	Directories DirectoryConfig `yaml:"directories,omitempty"` // Directory configuration
-	Projects    []string        `yaml:"projects,omitempty"`    // Projects owned (relative to owned dir)
-	Ignores     []string        `yaml:"ignores,omitempty"`     // Ignore patterns
+	Service      string          `yaml:"service,omitempty"`       // Service name for registry namespacing
+	Directories  DirectoryConfig `yaml:"directories,omitempty"`   // Directory configuration
+	AutoDiscover bool            `yaml:"auto_discover,omitempty"` // Auto-discover projects from owned directory
+	Projects     []string        `yaml:"projects,omitempty"`      // Projects owned (relative to owned dir) - only used if AutoDiscover is false
+	Ignores      []string        `yaml:"ignores,omitempty"`       // Ignore patterns
 }
 
 // DefaultDirectoryConfig returns the default directory configuration.
@@ -70,11 +71,12 @@ type ReceivedProject struct {
 
 // InitOptions contains options for initializing a workspace.
 type InitOptions struct {
-	Force     bool     // Force overwrite existing config
-	Projects  []string // Initial projects to claim
-	Service   string   // Service name for namespacing
-	OwnedDir  string   // Directory for owned protos
-	VendorDir string   // Directory for consumed protos
+	Force        bool     // Force overwrite existing config
+	Projects     []string // Initial projects to claim (only used if AutoDiscover is false)
+	Service      string   // Service name for namespacing
+	OwnedDir     string   // Directory for owned protos
+	VendorDir    string   // Directory for consumed protos
+	AutoDiscover bool     // Auto-discover projects from owned directory
 }
 
 // OpenOptions contains options for opening a workspace.

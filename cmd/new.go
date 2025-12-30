@@ -3,13 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/rs/zerolog"
 
-	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
-	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
 // NewCmd creates a new project (claim ownership).
@@ -19,70 +16,64 @@ type NewCmd struct {
 
 // Run executes the new command.
 func (c *NewCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	// Validate project paths
+	if err := c.validatePaths(); err != nil {
+		return err
+	}
+
+	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+	if err != nil {
+		return err
+	}
+
+	repoURL := GetRepoURL(ctx, wctx.Repo, log)
+
+	if err := c.checkRegistryConflicts(ctx, globals, wctx, repoURL, log); err != nil {
+		return err
+	}
+
+	return c.addProjects(wctx.WS, log)
+}
+
+// validatePaths validates all project paths.
+func (c *NewCmd) validatePaths() error {
 	for _, p := range c.Paths {
 		if err := local.ValidateProjectPath(p); err != nil {
 			return fmt.Errorf("invalid project path %q: %w", p, err)
 		}
 	}
+	return local.ProjectsOverlap(c.Paths)
+}
 
-	// Check for overlaps in requested projects
-	if err := local.ProjectsOverlap(c.Paths); err != nil {
-		return err
+// checkRegistryConflicts verifies that the projects can be claimed.
+func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOptions, wctx *WorkspaceContext, repoURL string, log *zerolog.Logger) error {
+	if globals.RegistryURL == "" {
+		return nil
 	}
 
-	// Get current directory
-	cwd, err := os.Getwd()
+	reg, err := OpenRegistry(ctx, globals, log)
 	if err != nil {
-		return fmt.Errorf("get cwd: %w", err)
+		log.Warn().Err(err).Msg("Failed to open registry")
+		return nil
 	}
 
-	// Open Git repository
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
+	if err := reg.Refresh(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to refresh registry")
 	}
 
-	// Open workspace
-	ws, err := local.Open(repo.Root(), local.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open workspace: %w", err)
-	}
+	snapshot, _ := reg.Snapshot(ctx)
 
-	// Get repository URL
-	repoURL, err := repo.GetRemoteURL(ctx, "origin")
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to get remote URL")
-		repoURL = ""
-	}
-	repoURL = git.NormalizeRemoteURL(repoURL)
-
-	// Check registry for conflicts
-	if globals.RegistryURL != "" {
-		reg, err := registry.Open(ctx, globals.CacheDir, registry.Config{
-			URL: globals.RegistryURL,
-		}, log)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to open registry")
-		} else {
-			// Refresh registry
-			if err := reg.Refresh(ctx); err != nil {
-				log.Warn().Err(err).Msg("Failed to refresh registry")
-			}
-
-			// Check each project (using registry path with service prefix)
-			snapshot, _ := reg.Snapshot(ctx)
-			for _, p := range c.Paths {
-				// Get the registry path with service prefix
-				registryPath := ws.RegistryProjectPath(local.ProjectPath(p))
-				if err := checkProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
-					return err
-				}
-			}
+	for _, p := range c.Paths {
+		registryPath := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
+		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
+			return err
 		}
 	}
 
-	// Add projects
+	return nil
+}
+
+// addProjects adds the projects to the workspace.
+func (c *NewCmd) addProjects(ws *local.Workspace, log *zerolog.Logger) error {
 	projects := make([]local.ProjectPath, len(c.Paths))
 	for i, p := range c.Paths {
 		projects[i] = local.ProjectPath(p)
@@ -96,48 +87,5 @@ func (c *NewCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Co
 		log.Info().Str("project", p).Msg("Created project")
 	}
 
-	return nil
-}
-
-// checkProjectClaim checks if a project can be claimed.
-func checkProjectClaim(
-	ctx context.Context,
-	reg *registry.Cache,
-	snapshot git.Hash,
-	repoURL string,
-	projectPath string,
-	log *zerolog.Logger,
-) error {
-	// Look up project in registry
-	res, err := reg.LookupProject(ctx, &registry.LookupProjectRequest{
-		Path:     projectPath,
-		Snapshot: snapshot,
-	})
-	if err == registry.ErrNotFound {
-		// Project doesn't exist - check for subprojects
-		subprojects, _ := reg.ListProjects(ctx, &registry.ListProjectsOptions{
-			Prefix:   projectPath + "/",
-			Snapshot: snapshot,
-		})
-		if len(subprojects) > 0 {
-			return fmt.Errorf("cannot create project %q: overlaps with existing projects", projectPath)
-		}
-		return nil // OK to claim
-	}
-	if err != nil {
-		return fmt.Errorf("lookup project: %w", err)
-	}
-
-	// Project exists - check ownership
-	if string(res.Project.Path) != projectPath {
-		// Parent project exists
-		return fmt.Errorf("cannot create project %q: parent project %q already exists", projectPath, res.Project.Path)
-	}
-
-	if repoURL != "" && res.Project.RepositoryURL != repoURL {
-		return fmt.Errorf("project %q is owned by %s", projectPath, res.Project.RepositoryURL)
-	}
-
-	log.Info().Str("project", projectPath).Msg("Project already exists in registry, adding to local config")
 	return nil
 }

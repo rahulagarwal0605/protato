@@ -3,12 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/rs/zerolog"
 
-	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
@@ -22,43 +20,34 @@ type ListCmd struct {
 // Run executes the list command.
 func (c *ListCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
 	if c.Local {
-		return c.listLocal(globals, log, ctx)
+		return c.listLocal(log, ctx)
 	}
 	return c.listRegistry(globals, log, ctx)
 }
 
-func (c *ListCmd) listLocal(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	// Get current directory
-	cwd, err := os.Getwd()
+// listLocal lists projects in the local workspace.
+func (c *ListCmd) listLocal(log *zerolog.Logger, ctx context.Context) error {
+	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
 	if err != nil {
-		return fmt.Errorf("get cwd: %w", err)
+		return err
 	}
 
-	// Open Git repository
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
-	}
-
-	// Open workspace
-	ws, err := local.Open(repo.Root(), local.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open workspace: %w", err)
-	}
-
-	// Get owned projects
-	owned, err := ws.OwnedProjects()
+	owned, err := wctx.WS.OwnedProjects()
 	if err != nil {
 		return fmt.Errorf("get owned projects: %w", err)
 	}
 
-	// Get received projects
-	received, err := ws.ReceivedProjects()
+	received, err := wctx.WS.ReceivedProjects()
 	if err != nil {
 		return fmt.Errorf("get received projects: %w", err)
 	}
 
-	// Print owned projects
+	c.printLocalProjects(owned, received)
+	return nil
+}
+
+// printLocalProjects prints owned and received projects.
+func (c *ListCmd) printLocalProjects(owned []local.ProjectPath, received []*local.ReceivedProject) {
 	if len(owned) > 0 {
 		fmt.Println("Owned projects:")
 		for _, p := range owned {
@@ -66,7 +55,6 @@ func (c *ListCmd) listLocal(globals *GlobalOptions, log *zerolog.Logger, ctx con
 		}
 	}
 
-	// Print received projects
 	if len(received) > 0 {
 		fmt.Println("Pulled projects:")
 		for _, r := range received {
@@ -77,24 +65,15 @@ func (c *ListCmd) listLocal(globals *GlobalOptions, log *zerolog.Logger, ctx con
 	if len(owned) == 0 && len(received) == 0 {
 		fmt.Println("No projects found")
 	}
-
-	return nil
 }
 
+// listRegistry lists projects from the remote registry.
 func (c *ListCmd) listRegistry(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	if globals.RegistryURL == "" {
-		return fmt.Errorf("registry URL not configured")
-	}
-
-	// Open registry
-	reg, err := registry.Open(ctx, globals.CacheDir, registry.Config{
-		URL: globals.RegistryURL,
-	}, log)
+	reg, err := OpenRegistry(ctx, globals, log)
 	if err != nil {
-		return fmt.Errorf("open registry: %w", err)
+		return err
 	}
 
-	// Refresh unless offline
 	if !c.Offline {
 		log.Debug().Msg("Refreshing registry")
 		if err := reg.Refresh(ctx); err != nil {
@@ -102,13 +81,16 @@ func (c *ListCmd) listRegistry(globals *GlobalOptions, log *zerolog.Logger, ctx 
 		}
 	}
 
-	// List projects
+	return c.printRegistryProjects(ctx, reg)
+}
+
+// printRegistryProjects lists and prints all projects from the registry.
+func (c *ListCmd) printRegistryProjects(ctx context.Context, reg *registry.Cache) error {
 	projects, err := reg.ListProjects(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("list projects: %w", err)
 	}
 
-	// Sort and print
 	projectStrings := make([]string, len(projects))
 	for i, p := range projects {
 		projectStrings[i] = string(p)

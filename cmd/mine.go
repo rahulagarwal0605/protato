@@ -3,13 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/rs/zerolog"
 
-	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
 )
 
@@ -21,69 +19,60 @@ type MineCmd struct {
 
 // Run executes the mine command.
 func (c *MineCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	// Get current directory
-	cwd, err := os.Getwd()
+	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
 	if err != nil {
-		return fmt.Errorf("get cwd: %w", err)
+		return err
 	}
 
-	// Open Git repository
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
-	}
-
-	// Open workspace
-	ws, err := local.Open(repo.Root(), local.OpenOptions{}, log)
-	if err != nil {
-		return fmt.Errorf("open workspace: %w", err)
-	}
-
-	// Get owned projects
-	projects, err := ws.OwnedProjects()
+	projects, err := wctx.WS.OwnedProjects()
 	if err != nil {
 		return fmt.Errorf("get owned projects: %w", err)
 	}
 
 	if c.Projects {
-		// Print project paths only
 		for _, p := range projects {
 			fmt.Println(p)
 		}
 		return nil
 	}
 
-	// Print file paths
+	return c.printFiles(wctx, projects, log)
+}
+
+// printFiles lists and prints all files from owned projects.
+func (c *MineCmd) printFiles(wctx *WorkspaceContext, projects []local.ProjectPath, log *zerolog.Logger) error {
 	var allFiles []string
 
 	for _, project := range projects {
-		files, err := ws.ListProjectFiles(project)
+		files, err := wctx.WS.ListOwnedProjectFiles(project)
 		if err != nil {
 			log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list files")
 			continue
 		}
 
 		for _, f := range files {
-			var path string
-			if c.Absolute {
-				path = f.AbsolutePath
-			} else {
-				relPath, err := filepath.Rel(repo.Root(), f.AbsolutePath)
-				if err != nil {
-					path = f.AbsolutePath
-				} else {
-					path = relPath
-				}
-			}
+			path := c.formatPath(f.AbsolutePath, wctx.Repo.Root())
 			allFiles = append(allFiles, path)
 		}
 	}
 
-	// Sort and print
 	sort.Strings(allFiles)
 	for _, f := range allFiles {
 		fmt.Println(f)
 	}
 
 	return nil
+}
+
+// formatPath formats the file path based on the Absolute flag.
+func (c *MineCmd) formatPath(absPath, repoRoot string) string {
+	if c.Absolute {
+		return absPath
+	}
+
+	relPath, err := filepath.Rel(repoRoot, absPath)
+	if err != nil {
+		return absPath
+	}
+	return relPath
 }
