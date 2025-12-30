@@ -86,6 +86,15 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 		}
 	}
 
+	// Build set of owned registry paths for filtering
+	ownedRegistryPaths := make(map[string]bool)
+	ownedProjects, _ := ws.OwnedProjects()
+	for _, p := range ownedProjects {
+		// Add both local path and registry path (with service prefix)
+		ownedRegistryPaths[string(p)] = true
+		ownedRegistryPaths[string(ws.RegistryProjectPath(p))] = true
+	}
+
 	// Phase 1: Discover dependencies
 	if !c.NoDeps {
 		log.Info().Msg("Discovering dependencies")
@@ -93,10 +102,10 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to discover dependencies")
 		} else {
-			// Filter out owned projects
+			// Filter out owned projects (check both local and registry paths)
 			var newProjects []registry.ProjectPath
 			for _, p := range allProjects {
-				if !ws.IsProjectOwned(local.ProjectPath(p)) {
+				if !ownedRegistryPaths[string(p)] {
 					newProjects = append(newProjects, p)
 				}
 			}
@@ -113,8 +122,8 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 	var plans []pullPlan
 
 	for _, project := range projectsToPull {
-		// Skip owned projects
-		if ws.IsProjectOwned(local.ProjectPath(project)) {
+		// Skip owned projects (check both local and registry paths)
+		if ownedRegistryPaths[string(project)] {
 			log.Debug().Str("project", string(project)).Msg("Skipping owned project")
 			continue
 		}
@@ -128,8 +137,8 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 			return fmt.Errorf("list project files %s: %w", project, err)
 		}
 
-		// List local files
-		localFiles, err := ws.ListProjectFiles(local.ProjectPath(project))
+		// List local files in vendor directory
+		localFiles, err := ws.ListVendorProjectFiles(local.ProjectPath(project))
 		if err != nil {
 			return fmt.Errorf("list local files %s: %w", project, err)
 		}

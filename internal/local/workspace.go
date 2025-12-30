@@ -22,7 +22,9 @@ const (
 	configFileName    = "protato.yaml"
 	lockFileName      = "protato.lock"
 	gitattributesName = ".gitattributes"
-	protosDir         = "protos"
+	protosDir         = "protos"       // Legacy default (for backward compatibility)
+	defaultOwnedDir   = "proto"        // New default for owned protos
+	defaultVendorDir  = "vendor-proto" // New default for consumed protos
 )
 
 var (
@@ -49,8 +51,23 @@ func Init(root string, opts InitOptions, log *zerolog.Logger) (*Workspace, error
 		return nil, ErrAlreadyInitialized
 	}
 
+	// Determine directory names (use defaults if not specified)
+	ownedDir := opts.OwnedDir
+	if ownedDir == "" {
+		ownedDir = defaultOwnedDir
+	}
+	vendorDir := opts.VendorDir
+	if vendorDir == "" {
+		vendorDir = defaultVendorDir
+	}
+
 	// Create initial config
 	config := &Config{
+		Service: opts.Service,
+		Directories: DirectoryConfig{
+			Owned:  ownedDir,
+			Vendor: vendorDir,
+		},
 		Projects: opts.Projects,
 		Ignores:  []string{},
 	}
@@ -60,10 +77,16 @@ func Init(root string, opts InitOptions, log *zerolog.Logger) (*Workspace, error
 		return nil, fmt.Errorf("write config: %w", err)
 	}
 
-	// Create protos directory
-	protosPath := filepath.Join(root, protosDir)
-	if err := os.MkdirAll(protosPath, 0755); err != nil {
-		return nil, fmt.Errorf("create protos dir: %w", err)
+	// Create owned protos directory
+	ownedPath := filepath.Join(root, ownedDir)
+	if err := os.MkdirAll(ownedPath, 0755); err != nil {
+		return nil, fmt.Errorf("create owned protos dir: %w", err)
+	}
+
+	// Create vendor protos directory
+	vendorPath := filepath.Join(root, vendorDir)
+	if err := os.MkdirAll(vendorPath, 0755); err != nil {
+		return nil, fmt.Errorf("create vendor protos dir: %w", err)
 	}
 
 	return &Workspace{
@@ -105,9 +128,60 @@ func (ws *Workspace) Root() string {
 	return ws.root
 }
 
-// ProtosDir returns the protos directory path.
+// ProtosDir returns the protos directory path (for backward compatibility).
+// Deprecated: Use OwnedDir() or VendorDir() instead.
 func (ws *Workspace) ProtosDir() string {
+	// For backward compatibility, check if using new config
+	if ws.config != nil && ws.config.Directories.Owned != "" {
+		return filepath.Join(ws.root, ws.config.Directories.Owned)
+	}
+	// Legacy: use "protos" directory
 	return filepath.Join(ws.root, protosDir)
+}
+
+// OwnedDir returns the directory path for owned (producer) protos.
+func (ws *Workspace) OwnedDir() string {
+	if ws.config != nil && ws.config.Directories.Owned != "" {
+		return filepath.Join(ws.root, ws.config.Directories.Owned)
+	}
+	return filepath.Join(ws.root, defaultOwnedDir)
+}
+
+// VendorDir returns the directory path for consumed (vendor) protos.
+func (ws *Workspace) VendorDir() string {
+	if ws.config != nil && ws.config.Directories.Vendor != "" {
+		return filepath.Join(ws.root, ws.config.Directories.Vendor)
+	}
+	return filepath.Join(ws.root, defaultVendorDir)
+}
+
+// ServiceName returns the service name for registry namespacing.
+func (ws *Workspace) ServiceName() string {
+	if ws.config != nil {
+		return ws.config.Service
+	}
+	return ""
+}
+
+// RegistryProjectPath returns the full registry path for a local project.
+// It prefixes the project path with the service name if configured.
+func (ws *Workspace) RegistryProjectPath(localProject ProjectPath) ProjectPath {
+	if ws.config != nil && ws.config.Service != "" {
+		return ProjectPath(path.Join(ws.config.Service, string(localProject)))
+	}
+	return localProject
+}
+
+// LocalProjectPath converts a registry project path to a local project path.
+// It strips the service name prefix if it matches.
+func (ws *Workspace) LocalProjectPath(registryProject ProjectPath) ProjectPath {
+	if ws.config != nil && ws.config.Service != "" {
+		prefix := ws.config.Service + "/"
+		if strings.HasPrefix(string(registryProject), prefix) {
+			return ProjectPath(strings.TrimPrefix(string(registryProject), prefix))
+		}
+	}
+	return registryProject
 }
 
 // OwnedProjects returns the list of owned projects.
@@ -123,19 +197,28 @@ func (ws *Workspace) OwnedProjects() ([]ProjectPath, error) {
 func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 	var received []*ReceivedProject
 
-	protosPath := ws.ProtosDir()
-	if _, err := os.Stat(protosPath); os.IsNotExist(err) {
-		return received, nil
+	// Look in vendor directory for received projects
+	vendorPath := ws.VendorDir()
+	if _, err := os.Stat(vendorPath); os.IsNotExist(err) {
+		// Fall back to legacy protos directory
+		vendorPath = ws.ProtosDir()
+		if _, err := os.Stat(vendorPath); os.IsNotExist(err) {
+			return received, nil
+		}
 	}
 
 	// Get owned projects for filtering
 	owned := make(map[string]bool)
 	for _, p := range ws.config.Projects {
 		owned[p] = true
+		// Also add with service prefix
+		if ws.config.Service != "" {
+			owned[path.Join(ws.config.Service, p)] = true
+		}
 	}
 
-	// Walk protos directory looking for lock files
-	err := filepath.WalkDir(protosPath, func(p string, d fs.DirEntry, err error) error {
+	// Walk vendor directory looking for lock files
+	err := filepath.WalkDir(vendorPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -144,7 +227,7 @@ func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 		}
 
 		// Get project path from lock file location
-		relPath, err := filepath.Rel(protosPath, filepath.Dir(p))
+		relPath, err := filepath.Rel(vendorPath, filepath.Dir(p))
 		if err != nil {
 			return nil
 		}
@@ -234,8 +317,8 @@ func (ws *Workspace) AddOwnedProjects(projects []ProjectPath) error {
 			existing[ps] = true
 		}
 
-		// Create project directory
-		projectPath := filepath.Join(ws.ProtosDir(), ps)
+		// Create project directory in owned directory
+		projectPath := filepath.Join(ws.OwnedDir(), ps)
 		if err := os.MkdirAll(projectPath, 0755); err != nil {
 			return fmt.Errorf("create project dir: %w", err)
 		}
@@ -246,15 +329,103 @@ func (ws *Workspace) AddOwnedProjects(projects []ProjectPath) error {
 	return writeConfig(configPath, ws.config)
 }
 
-// ReceiveProject starts receiving a project.
+// ReceiveProject starts receiving a project (into vendor directory).
 func (ws *Workspace) ReceiveProject(req *ReceiveProjectRequest) *ProjectReceiver {
-	projectRoot := filepath.Join(ws.ProtosDir(), string(req.Project))
+	// Received projects go into the vendor directory
+	projectRoot := filepath.Join(ws.VendorDir(), string(req.Project))
 	return &ProjectReceiver{
 		ws:          ws,
 		project:     req.Project,
 		projectRoot: projectRoot,
 		snapshot:    req.Snapshot,
 	}
+}
+
+// ListOwnedProjectFiles lists all files in an owned project.
+func (ws *Workspace) ListOwnedProjectFiles(project ProjectPath) ([]ProjectFile, error) {
+	var files []ProjectFile
+
+	projectPath := filepath.Join(ws.OwnedDir(), string(project))
+	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
+		return files, nil
+	}
+
+	err := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		// Skip special files
+		name := d.Name()
+		if name == lockFileName || name == gitattributesName || name == "protato.root.yaml" {
+			return nil
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(projectPath, p)
+		if err != nil {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		// Check ignores
+		if ws.shouldIgnore(project, relPath) {
+			return nil
+		}
+
+		files = append(files, ProjectFile{
+			Path:         relPath,
+			AbsolutePath: p,
+		})
+
+		return nil
+	})
+
+	return files, err
+}
+
+// ListVendorProjectFiles lists all files in a vendor project.
+func (ws *Workspace) ListVendorProjectFiles(project ProjectPath) ([]ProjectFile, error) {
+	var files []ProjectFile
+
+	projectPath := filepath.Join(ws.VendorDir(), string(project))
+	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
+		return files, nil
+	}
+
+	err := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		// Skip special files
+		name := d.Name()
+		if name == lockFileName || name == gitattributesName {
+			return nil
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(projectPath, p)
+		if err != nil {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		files = append(files, ProjectFile{
+			Path:         relPath,
+			AbsolutePath: p,
+		})
+
+		return nil
+	})
+
+	return files, err
 }
 
 // shouldIgnore checks if a file should be ignored.
@@ -280,9 +451,14 @@ func (ws *Workspace) IsProjectOwned(project ProjectPath) bool {
 	return false
 }
 
-// GetProjectLock returns the lock file for a project.
+// GetProjectLock returns the lock file for a vendor project.
 func (ws *Workspace) GetProjectLock(project ProjectPath) (*LockFile, error) {
-	lockPath := filepath.Join(ws.ProtosDir(), string(project), lockFileName)
+	// Look in vendor directory first
+	lockPath := filepath.Join(ws.VendorDir(), string(project), lockFileName)
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		// Fall back to legacy protos directory
+		lockPath = filepath.Join(ws.ProtosDir(), string(project), lockFileName)
+	}
 	return readLockFile(lockPath)
 }
 

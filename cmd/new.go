@@ -70,10 +70,12 @@ func (c *NewCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Co
 				log.Warn().Err(err).Msg("Failed to refresh registry")
 			}
 
-			// Check each project
+			// Check each project (using registry path with service prefix)
 			snapshot, _ := reg.Snapshot(ctx)
 			for _, p := range c.Paths {
-				if err := checkProjectClaim(ctx, reg, snapshot, repoURL, p, log); err != nil {
+				// Get the registry path with service prefix
+				registryPath := ws.RegistryProjectPath(local.ProjectPath(p))
+				if err := checkProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
 					return err
 				}
 			}

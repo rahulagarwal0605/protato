@@ -90,20 +90,29 @@ func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 			return fmt.Errorf("get snapshot: %w", err)
 		}
 
-		// Check ownership claims
+		// Check ownership claims (using registry path with service prefix)
 		for _, project := range ownedProjects {
-			if err := checkProjectClaim(ctx, reg, snapshot, repoURL, string(project), log); err != nil {
+			registryPath := ws.RegistryProjectPath(project)
+			if err := checkProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
 				return err
 			}
 		}
 
 		// Prepare updates
 		var finalSnapshot git.Hash
+		var registryProjects []registry.ProjectPath
 		for _, project := range ownedProjects {
-			log.Info().Str("project", string(project)).Msg("Preparing project")
+			// Get the registry path (with service prefix if configured)
+			registryPath := ws.RegistryProjectPath(project)
+			registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
 
-			// List project files
-			files, err := ws.ListProjectFiles(project)
+			log.Info().
+				Str("local", string(project)).
+				Str("registry", string(registryPath)).
+				Msg("Preparing project")
+
+			// List project files from owned directory
+			files, err := ws.ListOwnedProjectFiles(project)
 			if err != nil {
 				return fmt.Errorf("list files %s: %w", project, err)
 			}
@@ -117,10 +126,10 @@ func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 				})
 			}
 
-			// Update project
+			// Update project in registry with prefixed path
 			res, err := reg.SetProject(ctx, &registry.SetProjectRequest{
 				Project: &registry.Project{
-					Path:          registry.ProjectPath(project),
+					Path:          registry.ProjectPath(registryPath),
 					Commit:        currentCommit,
 					RepositoryURL: repoURL,
 				},
@@ -128,7 +137,7 @@ func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 				Snapshot: snapshot,
 			})
 			if err != nil {
-				return fmt.Errorf("set project %s: %w", project, err)
+				return fmt.Errorf("set project %s: %w", registryPath, err)
 			}
 
 			finalSnapshot = res.Snapshot
@@ -138,11 +147,7 @@ func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 		// Validate if enabled
 		if !c.NoValidate && finalSnapshot != "" {
 			log.Info().Msg("Validating proto files")
-			regProjects := make([]registry.ProjectPath, len(ownedProjects))
-			for i, p := range ownedProjects {
-				regProjects[i] = registry.ProjectPath(p)
-			}
-			if err := protoc.ValidateProtos(ctx, reg, finalSnapshot, regProjects, log); err != nil {
+			if err := protoc.ValidateProtos(ctx, reg, finalSnapshot, registryProjects, log); err != nil {
 				return fmt.Errorf("validation failed: %w", err)
 			}
 		}

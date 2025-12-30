@@ -453,7 +453,7 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
 	// Get the default branch from HEAD
 	branch := r.getDefaultBranch(ctx)
-	
+
 	return r.repo.Push(ctx, git.PushOptions{
 		Remote: "origin",
 		RefSpecs: []git.Refspec{
@@ -475,7 +475,7 @@ func (r *Cache) getDefaultBranch(ctx context.Context) string {
 			}
 		}
 	}
-	
+
 	// Default to master if we can't detect
 	return "master"
 }
