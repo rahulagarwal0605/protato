@@ -101,9 +101,9 @@ release: build-all
 	@echo "Creating release archives..."
 	@cd $(DIST_DIR) && for f in $(BINARY)-*; do \
 		if [ "$${f##*.}" = "exe" ]; then \
-			zip "$${f%.exe}.zip" "$$f"; \
+			cp "$$f" protato.exe && zip "$${f%.exe}.zip" protato.exe && rm protato.exe; \
 		else \
-			tar czf "$$f.tar.gz" "$$f"; \
+			cp "$$f" protato && tar czf "$$f.tar.gz" protato && rm protato; \
 		fi \
 	done
 
