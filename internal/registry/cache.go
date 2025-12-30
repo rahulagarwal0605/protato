@@ -454,7 +454,7 @@ func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
 	return r.repo.Push(ctx, git.PushOptions{
 		Remote: "origin",
 		RefSpecs: []git.Refspec{
-			git.Refspec(fmt.Sprintf("%s:refs/heads/main", hash)),
+			git.Refspec(fmt.Sprintf("%s:refs/heads/master", hash)),
 		},
 	})
 }
