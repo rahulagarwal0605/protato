@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
@@ -30,23 +29,23 @@ type pushContext struct {
 }
 
 // Run executes the push command.
-func (c *PushCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	pctx, err := c.preparePushContext(ctx, globals, log)
+func (c *PushCmd) Run(globals *GlobalOptions, ctx context.Context) error {
+	pctx, err := c.preparePushContext(ctx, globals)
 	if err != nil {
 		return err
 	}
 
 	if len(pctx.ownedProjects) == 0 {
-		log.Info().Msg("No owned projects to push")
+		logger.Log(ctx).Info().Msg("No owned projects to push")
 		return nil
 	}
 
-	return c.pushWithRetries(ctx, pctx, log)
+	return c.pushWithRetries(ctx, pctx)
 }
 
 // preparePushContext initializes all resources needed for push.
-func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions, log *zerolog.Logger) (*pushContext, error) {
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions) (*pushContext, error) {
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +60,12 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 		return nil, fmt.Errorf("get HEAD: %w", err)
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo, log)
+	repoURL := GetRepoURL(ctx, wctx.Repo)
 	if repoURL == "" {
 		return nil, fmt.Errorf("failed to get remote URL")
 	}
 
-	reg, err := OpenRegistry(ctx, globals, log)
+	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
 		return nil, err
 	}
@@ -81,17 +80,17 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 }
 
 // pushWithRetries attempts to push with optimistic locking retries.
-func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext, log *zerolog.Logger) error {
+func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext) error {
 	for attempt := 1; attempt <= c.Retries+1; attempt++ {
-		log.Debug().Int("attempt", attempt).Msg("Push attempt")
+		logger.Log(ctx).Debug().Int("attempt", attempt).Msg("Push attempt")
 
-		err := c.attemptPush(ctx, pctx, log)
+		err := c.attemptPush(ctx, pctx)
 		if err == nil {
 			return nil
 		}
 
 		if attempt < c.Retries+1 {
-			log.Warn().Err(err).Msg("Push failed, retrying")
+			logger.Log(ctx).Warn().Err(err).Msg("Push failed, retrying")
 			time.Sleep(c.RetryDelay * time.Duration(attempt))
 			continue
 		}
@@ -103,7 +102,7 @@ func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext, log *z
 }
 
 // attemptPush performs a single push attempt.
-func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext, log *zerolog.Logger) error {
+func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext) error {
 	if err := pctx.reg.Refresh(ctx); err != nil {
 		return fmt.Errorf("refresh registry: %w", err)
 	}
@@ -113,11 +112,11 @@ func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext, log *zerol
 		return fmt.Errorf("get snapshot: %w", err)
 	}
 
-	if err := c.checkOwnershipClaims(ctx, pctx, snapshot, log); err != nil {
+	if err := c.checkOwnershipClaims(ctx, pctx, snapshot); err != nil {
 		return err
 	}
 
-	finalSnapshot, registryProjects, err := c.updateProjects(ctx, pctx, snapshot, log)
+	finalSnapshot, registryProjects, err := c.updateProjects(ctx, pctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -126,18 +125,18 @@ func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext, log *zerol
 		return nil
 	}
 
-	if err := c.validateIfEnabled(ctx, pctx, finalSnapshot, registryProjects, log); err != nil {
+	if err := c.validateIfEnabled(ctx, pctx, finalSnapshot, registryProjects); err != nil {
 		return err
 	}
 
-	return c.pushToRemote(ctx, pctx, finalSnapshot, log)
+	return c.pushToRemote(ctx, pctx, finalSnapshot)
 }
 
 // checkOwnershipClaims verifies all projects can be pushed.
-func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) error {
+func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, snapshot git.Hash) error {
 	for _, project := range pctx.ownedProjects {
 		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
-		if err := CheckProjectClaim(ctx, pctx.reg, snapshot, pctx.repoURL, string(registryPath), log); err != nil {
+		if err := CheckProjectClaim(ctx, pctx.reg, snapshot, pctx.repoURL, string(registryPath)); err != nil {
 			return err
 		}
 	}
@@ -145,7 +144,7 @@ func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, s
 }
 
 // updateProjects updates all owned projects in the registry.
-func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) (git.Hash, []registry.ProjectPath, error) {
+func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapshot git.Hash) (git.Hash, []registry.ProjectPath, error) {
 	var finalSnapshot git.Hash
 	var registryProjects []registry.ProjectPath
 
@@ -153,7 +152,7 @@ func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapsho
 		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
 		registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
 
-		log.Info().
+		logger.Log(ctx).Info().
 			Str("local", string(project)).
 			Str("registry", string(registryPath)).
 			Msg("Preparing project")
@@ -202,13 +201,13 @@ func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushContext, lo
 }
 
 // validateIfEnabled runs proto validation if enabled.
-func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) error {
+func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snapshot git.Hash, projects []registry.ProjectPath) error {
 	if c.NoValidate {
 		return nil
 	}
 
-	log.Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, log); err != nil {
+	logger.Log(ctx).Info().Msg("Validating proto files")
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -216,13 +215,13 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 }
 
 // pushToRemote pushes the final snapshot to the remote registry.
-func (c *PushCmd) pushToRemote(ctx context.Context, pctx *pushContext, snapshot git.Hash, log *zerolog.Logger) error {
-	log.Info().Str("snapshot", snapshot.Short()).Msg("Pushing to registry")
+func (c *PushCmd) pushToRemote(ctx context.Context, pctx *pushContext, snapshot git.Hash) error {
+	logger.Log(ctx).Info().Str("snapshot", snapshot.Short()).Msg("Pushing to registry")
 
 	if err := pctx.reg.Push(ctx, snapshot); err != nil {
 		return err
 	}
 
-	log.Info().Msg("Push complete")
+	logger.Log(ctx).Info().Msg("Push complete")
 	return nil
 }

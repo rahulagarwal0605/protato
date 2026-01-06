@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
@@ -27,8 +26,8 @@ type verifyContext struct {
 }
 
 // Run executes the verify command.
-func (c *VerifyCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	vctx, err := c.prepareVerifyContext(ctx, globals, log)
+func (c *VerifyCmd) Run(globals *GlobalOptions, ctx context.Context) error {
+	vctx, err := c.prepareVerifyContext(ctx, globals)
 	if err != nil {
 		return err
 	}
@@ -36,16 +35,16 @@ func (c *VerifyCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context
 	var hasErrors bool
 
 	if vctx.reg != nil {
-		if err := c.verifyOwnedProjects(ctx, vctx, log); err != nil {
+		if err := c.verifyOwnedProjects(ctx, vctx); err != nil {
 			hasErrors = true
 		}
 
-		if err := c.verifyPulledProjects(ctx, vctx, log); err != nil {
+		if err := c.verifyPulledProjects(ctx, vctx); err != nil {
 			hasErrors = true
 		}
 	}
 
-	if err := c.verifyOrphanedFiles(vctx.wctx.WS, log); err != nil {
+	if err := c.verifyOrphanedFiles(ctx, vctx.wctx.WS); err != nil {
 		hasErrors = true
 	}
 
@@ -53,24 +52,24 @@ func (c *VerifyCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context
 		return fmt.Errorf("verification failed")
 	}
 
-	log.Info().Msg("Verification passed")
+	logger.Log(ctx).Info().Msg("Verification passed")
 	return nil
 }
 
 // prepareVerifyContext initializes verification resources.
-func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOptions, log *zerolog.Logger) (*verifyContext, error) {
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOptions) (*verifyContext, error) {
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo, log)
+	repoURL := GetRepoURL(ctx, wctx.Repo)
 
 	var reg *registry.Cache
 	if globals.RegistryURL != "" {
-		reg, err = c.openRegistry(ctx, globals, log)
+		reg, err = c.openRegistry(ctx, globals)
 		if err != nil {
-			log.Warn().Err(err).Msg("Failed to open registry")
+			logger.Log(ctx).Warn().Err(err).Msg("Failed to open registry")
 		}
 	}
 
@@ -82,15 +81,15 @@ func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOpt
 }
 
 // openRegistry opens and optionally refreshes the registry.
-func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions, log *zerolog.Logger) (*registry.Cache, error) {
-	reg, err := OpenRegistry(ctx, globals, log)
+func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache, error) {
+	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
 		return nil, err
 	}
 
 	if !c.Offline {
 		if err := reg.Refresh(ctx); err != nil {
-			log.Warn().Err(err).Msg("Failed to refresh registry")
+			logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
 		}
 	}
 
@@ -98,19 +97,19 @@ func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions, lo
 }
 
 // verifyOwnedProjects checks ownership claims for owned projects.
-func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext, log *zerolog.Logger) error {
-	log.Info().Msg("Checking owned project claims")
+func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext) error {
+	logger.Log(ctx).Info().Msg("Checking owned project claims")
 
 	snapshot, _ := vctx.reg.Snapshot(ctx)
 	ownedProjects, _ := vctx.wctx.WS.OwnedProjects()
 
 	var hasErrors bool
 	for _, project := range ownedProjects {
-		if err := CheckProjectClaim(ctx, vctx.reg, snapshot, vctx.repoURL, string(project), log); err != nil {
-			log.Error().Str("project", string(project)).Err(err).Msg("Claim check failed")
+		if err := CheckProjectClaim(ctx, vctx.reg, snapshot, vctx.repoURL, string(project)); err != nil {
+			logger.Log(ctx).Error().Str("project", string(project)).Err(err).Msg("Claim check failed")
 			hasErrors = true
 		} else {
-			log.Debug().Str("project", string(project)).Msg("Claim OK")
+			logger.Log(ctx).Debug().Str("project", string(project)).Msg("Claim OK")
 		}
 	}
 
@@ -121,18 +120,18 @@ func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext
 }
 
 // verifyPulledProjects checks integrity of pulled projects.
-func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContext, log *zerolog.Logger) error {
-	log.Info().Msg("Checking pulled project integrity")
+func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContext) error {
+	logger.Log(ctx).Info().Msg("Checking pulled project integrity")
 
 	receivedProjects, err := vctx.wctx.WS.ReceivedProjects()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to get received projects")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to get received projects")
 		return nil
 	}
 
 	var hasErrors bool
 	for _, received := range receivedProjects {
-		if err := c.verifyReceivedProject(ctx, vctx, received, log); err != nil {
+		if err := c.verifyReceivedProject(ctx, vctx, received); err != nil {
 			hasErrors = true
 		}
 	}
@@ -144,11 +143,11 @@ func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContex
 }
 
 // verifyReceivedProject checks a single received project.
-func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyContext, received *local.ReceivedProject, log *zerolog.Logger) error {
+func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyContext, received *local.ReceivedProject) error {
 	snapshot := git.Hash(received.ProviderSnapshot)
 	project := registry.ProjectPath(received.Project)
 
-	regFiles, localFiles, err := c.getProjectFiles(ctx, vctx, project, snapshot, log)
+	regFiles, localFiles, err := c.getProjectFiles(ctx, vctx, project, snapshot)
 	if err != nil {
 		return err
 	}
@@ -159,14 +158,14 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyConte
 	var hasErrors bool
 
 	for _, f := range localFiles {
-		if err := c.verifyLocalFile(ctx, vctx, project, snapshot, f, regFileMap, log); err != nil {
+		if err := c.verifyLocalFile(ctx, vctx, project, snapshot, f, regFileMap); err != nil {
 			hasErrors = true
 		}
 	}
 
 	for regPath := range regFileMap {
 		if !localFileSet[regPath] {
-			log.Error().
+			logger.Log(ctx).Error().
 				Str("project", string(project)).
 				Str("file", regPath).
 				Msg("File deleted locally")
@@ -181,19 +180,19 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyConte
 }
 
 // getProjectFiles retrieves files from both registry and local workspace.
-func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash, log *zerolog.Logger) ([]registry.ProjectFile, []local.ProjectFile, error) {
+func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash) ([]registry.ProjectFile, []local.ProjectFile, error) {
 	regFiles, err := vctx.reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
 		Project:  project,
 		Snapshot: snapshot,
 	})
 	if err != nil {
-		log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list registry files")
+		logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list registry files")
 		return nil, nil, err
 	}
 
 	localFiles, err := vctx.wctx.WS.ListVendorProjectFiles(local.ProjectPath(project))
 	if err != nil {
-		log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list local files")
+		logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list local files")
 		return nil, nil, err
 	}
 
@@ -219,10 +218,10 @@ func buildFileSet(files []local.ProjectFile) map[string]bool {
 }
 
 // verifyLocalFile checks if a local file matches the registry.
-func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash, f local.ProjectFile, regFileMap map[string]git.Hash, log *zerolog.Logger) error {
+func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash, f local.ProjectFile, regFileMap map[string]git.Hash) error {
 	regHash, exists := regFileMap[f.Path]
 	if !exists {
-		log.Error().
+		logger.Log(ctx).Error().
 			Str("project", string(project)).
 			Str("file", f.Path).
 			Msg("File added locally")
@@ -248,7 +247,7 @@ func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, pr
 	regFileHash := sha256.Sum256(regData.Bytes())
 
 	if localHash != regFileHash {
-		log.Error().
+		logger.Log(ctx).Error().
 			Str("project", string(project)).
 			Str("file", f.Path).
 			Msg("File modified locally")
@@ -259,17 +258,17 @@ func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, pr
 }
 
 // verifyOrphanedFiles checks for files not belonging to any project.
-func (c *VerifyCmd) verifyOrphanedFiles(ws *local.Workspace, log *zerolog.Logger) error {
-	log.Info().Msg("Checking for orphaned files")
+func (c *VerifyCmd) verifyOrphanedFiles(ctx context.Context, ws *local.Workspace) error {
+	logger.Log(ctx).Info().Msg("Checking for orphaned files")
 
 	orphaned, err := ws.OrphanedFiles()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to check for orphaned files")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to check for orphaned files")
 		return nil
 	}
 
 	for _, f := range orphaned {
-		log.Warn().Str("file", f).Msg("Orphaned file")
+		logger.Log(ctx).Warn().Str("file", f).Msg("Orphaned file")
 	}
 
 	return nil

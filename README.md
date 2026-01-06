@@ -34,12 +34,6 @@ protato-dl version
 go install github.com/rahulagarwal0605/protato@latest
 ```
 
-### With Custom Registry URL
-
-```bash
-go build -ldflags "-X main._defaultRegistryURL=https://github.com/org/registry.git" -o protato .
-```
-
 ## Usage
 
 ### Initialize Workspace

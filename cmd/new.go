@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 // NewCmd creates a new project (claim ownership).
@@ -15,23 +14,23 @@ type NewCmd struct {
 }
 
 // Run executes the new command.
-func (c *NewCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
+func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	if err := c.validatePaths(); err != nil {
 		return err
 	}
 
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
 	if err != nil {
 		return err
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo, log)
+	repoURL := GetRepoURL(ctx, wctx.Repo)
 
-	if err := c.checkRegistryConflicts(ctx, globals, wctx, repoURL, log); err != nil {
+	if err := c.checkRegistryConflicts(ctx, globals, wctx, repoURL); err != nil {
 		return err
 	}
 
-	return c.addProjects(wctx.WS, log)
+	return c.addProjects(ctx, wctx.WS)
 }
 
 // validatePaths validates all project paths.
@@ -45,26 +44,26 @@ func (c *NewCmd) validatePaths() error {
 }
 
 // checkRegistryConflicts verifies that the projects can be claimed.
-func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOptions, wctx *WorkspaceContext, repoURL string, log *zerolog.Logger) error {
+func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOptions, wctx *WorkspaceContext, repoURL string) error {
 	if globals.RegistryURL == "" {
 		return nil
 	}
 
-	reg, err := OpenRegistry(ctx, globals, log)
+	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to open registry")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to open registry")
 		return nil
 	}
 
 	if err := reg.Refresh(ctx); err != nil {
-		log.Warn().Err(err).Msg("Failed to refresh registry")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
 	}
 
 	snapshot, _ := reg.Snapshot(ctx)
 
 	for _, p := range c.Paths {
 		registryPath := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
-		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath), log); err != nil {
+		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath)); err != nil {
 			return err
 		}
 	}
@@ -73,7 +72,7 @@ func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOpti
 }
 
 // addProjects adds the projects to the workspace.
-func (c *NewCmd) addProjects(ws *local.Workspace, log *zerolog.Logger) error {
+func (c *NewCmd) addProjects(ctx context.Context, ws *local.Workspace) error {
 	projects := make([]local.ProjectPath, len(c.Paths))
 	for i, p := range c.Paths {
 		projects[i] = local.ProjectPath(p)
@@ -81,10 +80,6 @@ func (c *NewCmd) addProjects(ws *local.Workspace, log *zerolog.Logger) error {
 
 	if err := ws.AddOwnedProjects(projects); err != nil {
 		return fmt.Errorf("add projects: %w", err)
-	}
-
-	for _, p := range c.Paths {
-		log.Info().Str("project", p).Msg("Created project")
 	}
 
 	return nil

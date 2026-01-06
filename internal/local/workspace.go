@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -12,18 +13,16 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rahulagarwal0605/protato/internal/git"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 const (
 	configFileName    = "protato.yaml"
 	lockFileName      = "protato.lock"
 	gitattributesName = ".gitattributes"
-	defaultOwnedDir   = "proto"        // Default for owned protos
-	defaultVendorDir  = "vendor-proto" // Default for consumed protos
 )
 
 var (
@@ -35,76 +34,141 @@ var (
 
 // Workspace represents a local protato workspace.
 type Workspace struct {
-	root    string          // Repository root directory
-	log     *zerolog.Logger // Logger
-	ignores []string        // Ignore patterns (doublestar)
-	config  *Config         // Loaded configuration
+	root   string          // Repository root directory
+	ctx    context.Context // Context for dependency injection (logger)
+	config *Config         // Loaded configuration
 }
 
 // Init initializes a new workspace.
-func Init(root string, opts InitOptions, log *zerolog.Logger) (*Workspace, error) {
+func Init(ctx context.Context, root string, config *Config, force bool) (*Workspace, error) {
 	configPath := filepath.Join(root, configFileName)
 
 	// Check if already initialized
-	if _, err := os.Stat(configPath); err == nil && !opts.Force {
+	if _, err := os.Stat(configPath); err == nil && !force {
 		return nil, ErrAlreadyInitialized
 	}
 
-	// Determine directory names (use defaults if not specified)
-	ownedDir := opts.OwnedDir
-	if ownedDir == "" {
-		ownedDir = defaultOwnedDir
-	}
-	vendorDir := opts.VendorDir
-	if vendorDir == "" {
-		vendorDir = defaultVendorDir
-	}
-
-	// Create initial config
-	config := &Config{
-		Service: opts.Service,
-		Directories: DirectoryConfig{
-			Owned:  ownedDir,
-			Vendor: vendorDir,
-		},
-		AutoDiscover: opts.AutoDiscover,
-		Projects:     opts.Projects,
-		Ignores:      []string{},
+	// Build config (merge with existing if force, otherwise use provided)
+	finalConfig, err := buildConfig(configPath, config, force)
+	if err != nil {
+		return nil, err
 	}
 
 	// Write config file
-	if err := writeConfig(configPath, config); err != nil {
+	if err := writeConfig(configPath, finalConfig); err != nil {
 		return nil, fmt.Errorf("write config: %w", err)
 	}
 
-	// Create owned protos directory
-	ownedPath := filepath.Join(root, ownedDir)
-	if err := os.MkdirAll(ownedPath, 0755); err != nil {
-		return nil, fmt.Errorf("create owned protos dir: %w", err)
-	}
-
-	// Create vendor protos directory
-	vendorPath := filepath.Join(root, vendorDir)
-	if err := os.MkdirAll(vendorPath, 0755); err != nil {
-		return nil, fmt.Errorf("create vendor protos dir: %w", err)
+	// Create directories
+	ownedDir := finalConfig.OwnedDir()
+	vendorDir := finalConfig.VendorDir()
+	if err := createDirectories(root, ownedDir, vendorDir); err != nil {
+		return nil, err
 	}
 
 	return &Workspace{
-		root:    root,
-		log:     log,
-		ignores: config.Ignores,
-		config:  config,
+		root:   root,
+		ctx:    ctx,
+		config: finalConfig,
 	}, nil
 }
 
+// buildConfig creates or merges configuration based on force flag.
+func buildConfig(configPath string, config *Config, force bool) (*Config, error) {
+	if force {
+		return buildConfigWithMerge(configPath, config)
+	}
+	return config, nil
+}
+
+// buildConfigWithMerge merges config with existing config if it exists, otherwise uses provided config.
+func buildConfigWithMerge(configPath string, config *Config) (*Config, error) {
+	existingConfig, err := readConfig(configPath)
+	if err != nil {
+		// No existing config, use provided config
+		return config, nil
+	}
+
+	// Merge with existing config
+	return mergeConfig(existingConfig, config), nil
+}
+
+// mergeConfig merges new config into existing config.
+func mergeConfig(existing *Config, new *Config) *Config {
+	config := existing
+
+	// Update service if provided
+	if new.Service != "" {
+		config.Service = new.Service
+	}
+
+	// Update directories if provided
+	if new.Directories.Owned != "" {
+		config.Directories.Owned = new.Directories.Owned
+	}
+	if new.Directories.Vendor != "" {
+		config.Directories.Vendor = new.Directories.Vendor
+	}
+
+	// Merge includes if provided
+	if len(new.Includes) > 0 {
+		config.Includes = mergeStringSlice(config.Includes, new.Includes)
+	}
+
+	// Auto-discover wins - use the provided value
+	config.AutoDiscover = new.AutoDiscover
+
+	// Merge excludes if provided
+	if len(new.Excludes) > 0 {
+		config.Excludes = mergeStringSlice(config.Excludes, new.Excludes)
+	}
+
+	return config
+}
+
+// mergeStringSlice merges new items into existing slice, avoiding duplicates.
+func mergeStringSlice(existing, newItems []string) []string {
+	seen := make(map[string]bool)
+	for _, item := range existing {
+		seen[item] = true
+	}
+
+	result := existing
+	for _, item := range newItems {
+		if !seen[item] {
+			result = append(result, item)
+			seen[item] = true
+		}
+	}
+	return result
+}
+
+// createDirectories creates owned and vendor directories.
+func createDirectories(root, ownedDir, vendorDir string) error {
+	ownedPath := filepath.Join(root, ownedDir)
+	if err := os.MkdirAll(ownedPath, 0755); err != nil {
+		return fmt.Errorf("create owned protos dir: %w", err)
+	}
+
+	vendorPath := filepath.Join(root, vendorDir)
+	if err := os.MkdirAll(vendorPath, 0755); err != nil {
+		return fmt.Errorf("create vendor protos dir: %w", err)
+	}
+
+	return nil
+}
+
 // Open opens an existing workspace.
-func Open(root string, opts OpenOptions, log *zerolog.Logger) (*Workspace, error) {
+func Open(ctx context.Context, root string, opts OpenOptions) (*Workspace, error) {
 	configPath := filepath.Join(root, configFileName)
 
 	// Check if initialized
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if opts.CreateIfMissing {
-			return Init(root, InitOptions{}, log)
+			defaultConfig := &Config{
+				Directories: DefaultDirectoryConfig(),
+			}
+			return Init(ctx, root, defaultConfig, false)
 		}
 		return nil, ErrNotInitialized
 	}
@@ -116,10 +180,9 @@ func Open(root string, opts OpenOptions, log *zerolog.Logger) (*Workspace, error
 	}
 
 	return &Workspace{
-		root:    root,
-		log:     log,
-		ignores: config.Ignores,
-		config:  config,
+		root:   root,
+		ctx:    ctx,
+		config: config,
 	}, nil
 }
 
@@ -130,18 +193,12 @@ func (ws *Workspace) Root() string {
 
 // OwnedDir returns the directory path for owned (producer) protos.
 func (ws *Workspace) OwnedDir() string {
-	if ws.config != nil && ws.config.Directories.Owned != "" {
-		return filepath.Join(ws.root, ws.config.Directories.Owned)
-	}
-	return filepath.Join(ws.root, defaultOwnedDir)
+	return filepath.Join(ws.root, ws.config.OwnedDir())
 }
 
 // VendorDir returns the directory path for consumed (vendor) protos.
 func (ws *Workspace) VendorDir() string {
-	if ws.config != nil && ws.config.Directories.Vendor != "" {
-		return filepath.Join(ws.root, ws.config.Directories.Vendor)
-	}
-	return filepath.Join(ws.root, defaultVendorDir)
+	return filepath.Join(ws.root, ws.config.VendorDir())
 }
 
 // ServiceName returns the service name for registry namespacing.
@@ -174,32 +231,26 @@ func (ws *Workspace) LocalProjectPath(registryProject ProjectPath) ProjectPath {
 }
 
 // OwnedProjects returns the list of owned projects.
-// If AutoDiscover is enabled, it discovers projects by scanning the owned directory
-// for subdirectories that contain .proto files.
+// When auto_discover=true: includes all projects in owned dir + projects matching includes patterns, minus excludes
+// When auto_discover=false: includes only projects matching includes patterns, minus excludes
 func (ws *Workspace) OwnedProjects() ([]ProjectPath, error) {
-	// If auto-discover is enabled, discover projects from the owned directory
 	if ws.config.AutoDiscover {
 		return ws.discoverProjects()
 	}
 
-	// Otherwise, use the explicit projects list
-	projects := make([]ProjectPath, len(ws.config.Projects))
-	for i, p := range ws.config.Projects {
-		projects[i] = ProjectPath(p)
-	}
-	return projects, nil
+	// When auto-discover is false, only include projects matching includes patterns
+	return ws.getProjectsFromIncludes()
 }
 
 // discoverProjects scans the owned directory and discovers projects.
-// A project is any directory that contains at least one .proto file.
-// Projects with a protato.lock file are excluded (they are pulled, not owned).
+// When auto_discover=true: includes all projects in owned dir + projects matching includes patterns, minus excludes
 func (ws *Workspace) discoverProjects() ([]ProjectPath, error) {
-	var projects []ProjectPath
+	var allProjects []ProjectPath
 	seen := make(map[string]bool)
 
 	ownedPath := ws.OwnedDir()
 	if _, err := os.Stat(ownedPath); os.IsNotExist(err) {
-		return projects, nil
+		return ws.applyIncludesAndExcludes([]ProjectPath{}, allProjects)
 	}
 
 	// Walk the owned directory to find all .proto files
@@ -227,26 +278,192 @@ func (ws *Workspace) discoverProjects() ([]ProjectPath, error) {
 		}
 		seen[relDir] = true
 
-		// Check ignores
-		if ws.shouldIgnoreProject(relDir) {
+		// Skip if this is a pulled project (has protato.lock file)
+		if ws.isPulledProject(relDir) {
 			return nil
 		}
+
+		allProjects = append(allProjects, ProjectPath(relDir))
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return ws.applyIncludesAndExcludes(allProjects, []ProjectPath{})
+}
+
+// getProjectsFromIncludes returns projects matching includes patterns when auto-discover is false.
+func (ws *Workspace) getProjectsFromIncludes() ([]ProjectPath, error) {
+	if len(ws.config.Includes) == 0 {
+		return []ProjectPath{}, nil
+	}
+
+	var matchedProjects []ProjectPath
+	seen := make(map[string]bool)
+
+	ownedPath := ws.OwnedDir()
+	if _, err := os.Stat(ownedPath); os.IsNotExist(err) {
+		return []ProjectPath{}, nil
+	}
+
+	// Walk the owned directory to find projects matching includes patterns
+	err := filepath.WalkDir(ownedPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip non-proto files
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".proto") {
+			return nil
+		}
+
+		// Get the directory containing this proto file
+		protoDir := filepath.Dir(p)
+		relDir, err := filepath.Rel(ownedPath, protoDir)
+		if err != nil {
+			return nil
+		}
+		relDir = filepath.ToSlash(relDir)
+
+		// Skip if we've already seen this project
+		if seen[relDir] {
+			return nil
+		}
+		seen[relDir] = true
 
 		// Skip if this is a pulled project (has protato.lock file)
 		if ws.isPulledProject(relDir) {
 			return nil
 		}
 
-		projects = append(projects, ProjectPath(relDir))
+		// Check if project matches any include pattern
+		if ws.matchesIncludes(relDir) {
+			matchedProjects = append(matchedProjects, ProjectPath(relDir))
+		}
+
 		return nil
 	})
 
-	return projects, err
+	if err != nil {
+		return nil, err
+	}
+
+	return ws.applyIncludesAndExcludes([]ProjectPath{}, matchedProjects)
 }
 
-// shouldIgnoreProject checks if a project path should be ignored.
-func (ws *Workspace) shouldIgnoreProject(projectPath string) bool {
-	for _, pattern := range ws.ignores {
+// applyIncludesAndExcludes applies include and exclude patterns to projects.
+// discoveredProjects: projects found by scanning (when auto-discover=true)
+// includedProjects: projects matching includes patterns (when auto-discover=false or additional when true)
+func (ws *Workspace) applyIncludesAndExcludes(discoveredProjects []ProjectPath, includedProjects []ProjectPath) ([]ProjectPath, error) {
+	result := make(map[string]ProjectPath)
+
+	// Add discovered projects (when auto-discover=true, these are all projects in owned dir)
+	for _, p := range discoveredProjects {
+		result[string(p)] = p
+	}
+
+	// Add projects matching includes patterns
+	// When auto-discover=true: these are additional to discovered projects
+	// When auto-discover=false: these are the only projects
+	if len(ws.config.Includes) > 0 {
+		ownedPath := ws.OwnedDir()
+		for _, includePattern := range ws.config.Includes {
+			// Find all projects matching this include pattern
+			matches, err := ws.findProjectsMatchingPattern(ownedPath, includePattern)
+			if err != nil {
+				return nil, err
+			}
+			for _, p := range matches {
+				if !ws.isPulledProject(string(p)) {
+					result[string(p)] = p
+				}
+			}
+		}
+	}
+
+	// Add explicitly included projects from includedProjects parameter
+	for _, p := range includedProjects {
+		result[string(p)] = p
+	}
+
+	// Apply excludes
+	finalProjects := []ProjectPath{}
+	for _, p := range result {
+		if !ws.shouldExcludeProject(string(p)) {
+			finalProjects = append(finalProjects, p)
+		}
+	}
+
+	return finalProjects, nil
+}
+
+// findProjectsMatchingPattern finds all projects matching a glob pattern.
+func (ws *Workspace) findProjectsMatchingPattern(ownedPath, pattern string) ([]ProjectPath, error) {
+	var matches []ProjectPath
+	seen := make(map[string]bool)
+
+	err := filepath.WalkDir(ownedPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".proto") {
+			return nil
+		}
+
+		protoDir := filepath.Dir(p)
+		relDir, err := filepath.Rel(ownedPath, protoDir)
+		if err != nil {
+			return nil
+		}
+		relDir = filepath.ToSlash(relDir)
+
+		if seen[relDir] {
+			return nil
+		}
+		seen[relDir] = true
+
+		// Check if matches pattern
+		match, _ := doublestar.Match(pattern, relDir)
+		if match {
+			matches = append(matches, ProjectPath(relDir))
+		}
+
+		return nil
+	})
+
+	return matches, err
+}
+
+// matchesIncludes checks if a project path matches any include pattern.
+func (ws *Workspace) matchesIncludes(projectPath string) bool {
+	if len(ws.config.Includes) == 0 {
+		return false
+	}
+
+	for _, pattern := range ws.config.Includes {
+		match, _ := doublestar.Match(pattern, projectPath)
+		if match {
+			return true
+		}
+		// Also check with trailing slash
+		match, _ = doublestar.Match(pattern, projectPath+"/")
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldExcludeProject checks if a project path should be excluded.
+func (ws *Workspace) shouldExcludeProject(projectPath string) bool {
+	if ws.config == nil {
+		return false
+	}
+
+	for _, pattern := range ws.config.Excludes {
 		// Check if the pattern matches the project path
 		match, _ := doublestar.Match(pattern, projectPath)
 		if match {
@@ -293,16 +510,20 @@ func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 
 	// Get owned projects for filtering
 	owned := make(map[string]bool)
-	for _, p := range ws.config.Projects {
-		owned[p] = true
+	ownedProjects, err := ws.OwnedProjects()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ownedProjects {
+		owned[string(p)] = true
 		// Also add with service prefix
 		if ws.config.Service != "" {
-			owned[path.Join(ws.config.Service, p)] = true
+			owned[path.Join(ws.config.Service, string(p))] = true
 		}
 	}
 
 	// Walk vendor directory looking for lock files
-	err := filepath.WalkDir(vendorPath, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(vendorPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -325,7 +546,9 @@ func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 		// Read lock file
 		lock, err := readLockFile(p)
 		if err != nil {
-			ws.log.Warn().Err(err).Str("path", p).Msg("Failed to read lock file")
+			if log := logger.Log(ws.ctx); log != nil {
+				log.Warn().Err(err).Str("path", p).Msg("Failed to read lock file")
+			}
 			return nil
 		}
 
@@ -342,16 +565,16 @@ func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 
 // AddOwnedProjects adds new owned projects to the configuration.
 func (ws *Workspace) AddOwnedProjects(projects []ProjectPath) error {
-	// Add to existing projects
+	// Add to existing includes
 	existing := make(map[string]bool)
-	for _, p := range ws.config.Projects {
+	for _, p := range ws.config.Includes {
 		existing[p] = true
 	}
 
 	for _, p := range projects {
 		ps := string(p)
 		if !existing[ps] {
-			ws.config.Projects = append(ws.config.Projects, ps)
+			ws.config.Includes = append(ws.config.Includes, ps)
 			existing[ps] = true
 		}
 
@@ -409,8 +632,8 @@ func (ws *Workspace) ListOwnedProjectFiles(project ProjectPath) ([]ProjectFile, 
 		}
 		relPath = filepath.ToSlash(relPath)
 
-		// Check ignores
-		if ws.shouldIgnore(project, relPath) {
+		// Check excludes
+		if ws.shouldExclude(project, relPath) {
 			return nil
 		}
 
@@ -466,11 +689,15 @@ func (ws *Workspace) ListVendorProjectFiles(project ProjectPath) ([]ProjectFile,
 	return files, err
 }
 
-// shouldIgnore checks if a file should be ignored.
-func (ws *Workspace) shouldIgnore(project ProjectPath, file string) bool {
+// shouldExclude checks if a file should be excluded.
+func (ws *Workspace) shouldExclude(project ProjectPath, file string) bool {
+	if ws.config == nil {
+		return false
+	}
+
 	fullPath := path.Join(string(project), file)
 
-	for _, pattern := range ws.ignores {
+	for _, pattern := range ws.config.Excludes {
 		match, _ := doublestar.Match(pattern, fullPath)
 		if match {
 			return true
@@ -481,8 +708,12 @@ func (ws *Workspace) shouldIgnore(project ProjectPath, file string) bool {
 
 // IsProjectOwned returns true if the project is owned by this workspace.
 func (ws *Workspace) IsProjectOwned(project ProjectPath) bool {
-	for _, p := range ws.config.Projects {
-		if p == string(project) {
+	ownedProjects, err := ws.OwnedProjects()
+	if err != nil {
+		return false
+	}
+	for _, p := range ownedProjects {
+		if p == project {
 			return true
 		}
 	}

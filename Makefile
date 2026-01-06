@@ -5,11 +5,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Default registry URL (can be overridden)
-REGISTRY_URL ?=
-
 # Go build flags
-LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE) -X main._defaultRegistryURL=$(REGISTRY_URL)"
+LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
 # Binary name
 BINARY := protato
@@ -128,5 +125,4 @@ help:
 	@echo ""
 	@echo "Variables:"
 	@echo "  VERSION      - Version string (default: git describe)"
-	@echo "  REGISTRY_URL - Default registry URL to embed"
 

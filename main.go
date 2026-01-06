@@ -2,26 +2,24 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"time"
 
 	"github.com/alecthomas/kong"
-	"github.com/mattn/go-isatty"
 	"github.com/rs/zerolog"
 
 	"github.com/rahulagarwal0605/protato/cmd"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
-// Build-time configuration
-var _defaultRegistryURL = ""
-
-// Version information (set at build time)
+// Version information (set at build time via -ldflags)
+// Example: go build -ldflags "-X main.version=v1.0.0 -X main.commit=abc123 -X main.date=2024-01-01T00:00:00Z"
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	version string
+	commit  string
+	date    string
 )
 
 type mainCmd struct {
@@ -31,93 +29,108 @@ type mainCmd struct {
 	Verbosity int         `short:"v" type:"counter" help:"Increase verbosity"`
 	Dir       string      `short:"C" help:"Change directory before running"`
 
-	Init       cmd.InitCmd   `cmd:"" help:"Initialize protato in a repository"`
-	New        cmd.NewCmd    `cmd:"" help:"Create a new project (claim ownership)"`
-	Pull       cmd.PullCmd   `cmd:"" help:"Download projects from registry"`
-	Push       cmd.PushCmd   `cmd:"" help:"Publish owned projects to registry"`
-	Verify     cmd.VerifyCmd `cmd:"" help:"Verify workspace integrity"`
-	List       cmd.ListCmd   `cmd:"" help:"List available projects"`
-	Mine       cmd.MineCmd   `cmd:"" help:"List files owned by this repository"`
-	Completion completionCmd `cmd:"" help:"Generate shell completion scripts"`
+	Init   cmd.InitCmd   `cmd:"" help:"Initialize protato in a repository"`
+	New    cmd.NewCmd    `cmd:"" help:"Create a new project (claim ownership)"`
+	Pull   cmd.PullCmd   `cmd:"" help:"Download projects from registry"`
+	Push   cmd.PushCmd   `cmd:"" help:"Publish owned projects to registry"`
+	Verify cmd.VerifyCmd `cmd:"" help:"Verify workspace integrity"`
+	List   cmd.ListCmd   `cmd:"" help:"List available projects"`
+	Mine   cmd.MineCmd   `cmd:"" help:"List files owned by this repository"`
 }
 
 type versionFlag bool
 
-func (v versionFlag) BeforeApply(app *kong.Kong) error {
-	app.Stdout.Write([]byte("protato " + version + " (" + commit + ") built on " + date + "\n"))
-	os.Exit(0)
-	return nil
-}
-
-type completionCmd struct {
-	Shell string `arg:"" enum:"bash,zsh,fish" help:"Shell to generate completion for"`
-}
-
-func (c *completionCmd) Run(kctx *kong.Context) error {
-	// Generate completions based on shell
-	return nil
-}
-
 func main() {
-	// Setup logging
-	output := zerolog.ConsoleWriter{
-		Out:        os.Stderr,
-		NoColor:    !isatty.IsTerminal(os.Stderr.Fd()),
-		TimeFormat: time.RFC3339,
-	}
-	log := zerolog.New(output).With().Timestamp().Logger()
-
-	// Context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := setupContextAndLogging()
 	defer cancel()
 
-	// Signal handling
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt)
-	go func() {
-		<-sigc
-		log.Warn().Msg("Interrupted, finishing up...")
-		cancel()
-	}()
-
-	// Determine default registry URL
-	defaultRegistryURL := _defaultRegistryURL
-	if url := os.Getenv("PROTATO_REGISTRY_URL"); url != "" {
-		defaultRegistryURL = url
+	defaultCacheDir, err := getDefaultCacheDir()
+	if err != nil {
+		logger.Log(ctx).Fatal().Err(err).Msg("Failed to determine cache directory")
 	}
-
-	// Determine default cache directory
-	defaultCacheDir := os.Getenv("PROTATO_REGISTRY_CACHE")
-	if defaultCacheDir == "" {
-		cacheHome := os.Getenv("XDG_CACHE_HOME")
-		if cacheHome == "" {
-			home, _ := os.UserHomeDir()
-			cacheHome = filepath.Join(home, ".cache")
-		}
-		defaultCacheDir = filepath.Join(cacheHome, "protato", "registry")
-	}
-
-	// Parse CLI
-	var cli mainCmd
-	parser := kong.Must(&cli,
-		kong.Name("protato"),
-		kong.Description("A CLI tool for managing protobuf definitions across distributed Git repositories"),
-		kong.UsageOnError(),
-		kong.Vars{
-			"defaultRegistryURL": defaultRegistryURL,
-			"defaultCacheDir":    defaultCacheDir,
-		},
-		kong.BindTo(ctx, (*context.Context)(nil)),
-		kong.BindTo(&log, (*zerolog.Logger)(nil)),
-	)
+	cli, parser := setupCLI(ctx, defaultCacheDir)
 
 	kctx, err := parser.Parse(os.Args[1:])
 	if err != nil {
 		parser.FatalIfErrorf(err)
 	}
 
-	// Set verbosity
-	switch cli.Verbosity {
+	configureVerbosity(cli.Verbosity)
+	configureDirectory(ctx, cli.Dir)
+
+	// Execute command - Kong injects globals and ctx
+	if err := kctx.Run(&cli.GlobalOptions, ctx); err != nil {
+		kctx.FatalIfErrorf(err)
+	}
+}
+
+// setupContextAndLogging creates context and logger with signal handling.
+// The logger is injected into the context before returning.
+func setupContextAndLogging() (context.Context, context.CancelFunc) {
+	log := logger.Init()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Inject logger into context
+	ctx = logger.WithLogger(ctx, &log)
+	setupSignalHandling(ctx, cancel)
+
+	return ctx, cancel
+}
+
+// setupSignalHandling sets up interrupt signal handling.
+func setupSignalHandling(ctx context.Context, cancel context.CancelFunc) {
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	go func() {
+		<-sigc
+		logger.Log(ctx).Warn().Msg("Interrupted, finishing up...")
+		cancel()
+	}()
+}
+
+// getDefaultCacheDir returns the OS-specific default cache directory.
+// Note: PROTATO_REGISTRY_CACHE env var is handled by Kong's env tag in GlobalOptions.
+// This function only calculates the fallback default when env var is not set.
+//   - macOS: ~/Library/Caches/
+//   - Windows: %LOCALAPPDATA%
+//   - Linux/Unix: $XDG_CACHE_HOME or ~/.cache
+func getDefaultCacheDir() (string, error) {
+	// Use Go's cross-platform cache directory function
+	// os.UserCacheDir() is very reliable and handles all OS-specific conventions
+	cacheHome, err := os.UserCacheDir()
+	if err != nil {
+		// Fallback: use home directory + .cache
+		userCacheErr := err
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to determine cache directory: UserCacheDir failed (%v), UserHomeDir failed (%v)", userCacheErr, err)
+		}
+		cacheHome = filepath.Join(home, ".cache")
+	}
+
+	return filepath.Join(cacheHome, "protato", "registry"), nil
+}
+
+// setupCLI creates and configures the Kong CLI parser.
+func setupCLI(ctx context.Context, defaultCacheDir string) (mainCmd, *kong.Kong) {
+	var cli mainCmd
+
+	parser := kong.Must(&cli,
+		kong.Name("protato"),
+		kong.Description("A CLI tool for managing protobuf definitions across distributed Git repositories"),
+		kong.UsageOnError(),
+		kong.Vars{
+			"defaultCacheDir": defaultCacheDir, // Used by Kong's default interpolation in struct tags
+		},
+		kong.BindTo(ctx, (*context.Context)(nil)),
+	)
+
+	return cli, parser
+}
+
+// configureVerbosity sets the global log level based on verbosity flag.
+func configureVerbosity(verbosity int) {
+	switch verbosity {
 	case 0:
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	case 1:
@@ -125,23 +138,36 @@ func main() {
 	default:
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
+}
 
-	// Change directory if requested
-	if cli.Dir != "" {
-		if err := os.Chdir(cli.Dir); err != nil {
-			log.Fatal().Err(err).Str("dir", cli.Dir).Msg("Failed to change directory")
-		}
+// configureDirectory changes to the requested directory if specified.
+func configureDirectory(ctx context.Context, dir string) {
+	if dir == "" {
+		return
 	}
 
-	// Set default values
-	if cli.RegistryURL == "" {
-		cli.RegistryURL = defaultRegistryURL
+	if err := os.Chdir(dir); err != nil {
+		logger.Log(ctx).Fatal().Err(err).Str("dir", dir).Msg("Failed to change directory")
 	}
-	if cli.CacheDir == "" {
-		cli.CacheDir = defaultCacheDir
+}
+
+// BeforeApply handles the --version flag by printing version info and exiting.
+func (v versionFlag) BeforeApply(app *kong.Kong) error {
+	// Format version string, handling empty values
+	versionStr := version
+	if versionStr == "" {
+		versionStr = "unknown"
+	}
+	commitStr := commit
+	if commitStr == "" {
+		commitStr = "unknown"
+	}
+	dateStr := date
+	if dateStr == "" {
+		dateStr = "unknown"
 	}
 
-	// Run command
-	err = kctx.Run(&cli.GlobalOptions, &log, ctx)
-	kctx.FatalIfErrorf(err)
+	app.Stdout.Write([]byte("protato " + versionStr + " (" + commitStr + ") built on " + dateStr + "\n"))
+	os.Exit(0)
+	return nil
 }

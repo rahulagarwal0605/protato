@@ -24,8 +24,8 @@ type Config struct {
 	Service      string          `yaml:"service,omitempty"`       // Service name for registry namespacing
 	Directories  DirectoryConfig `yaml:"directories,omitempty"`   // Directory configuration
 	AutoDiscover bool            `yaml:"auto_discover,omitempty"` // Auto-discover projects from owned directory
-	Projects     []string        `yaml:"projects,omitempty"`      // Projects owned (relative to owned dir) - only used if AutoDiscover is false
-	Ignores      []string        `yaml:"ignores,omitempty"`       // Ignore patterns
+	Includes     []string        `yaml:"includes,omitempty"`      // Include patterns (glob) - when auto_discover=true: additional projects, when false: only these projects
+	Excludes     []string        `yaml:"excludes,omitempty"`      // Exclude patterns (glob) - exclude projects/files matching these patterns
 }
 
 // DefaultDirectoryConfig returns the default directory configuration.
@@ -67,16 +67,6 @@ type ProjectFile struct {
 type ReceivedProject struct {
 	Project          ProjectPath
 	ProviderSnapshot string // Registry Git commit hash
-}
-
-// InitOptions contains options for initializing a workspace.
-type InitOptions struct {
-	Force        bool     // Force overwrite existing config
-	Projects     []string // Initial projects to claim (only used if AutoDiscover is false)
-	Service      string   // Service name for namespacing
-	OwnedDir     string   // Directory for owned protos
-	VendorDir    string   // Directory for consumed protos
-	AutoDiscover bool     // Auto-discover projects from owned directory
 }
 
 // OpenOptions contains options for opening a workspace.

@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rahulagarwal0605/protato/internal/git"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 const (
@@ -45,16 +45,16 @@ type gitRepository interface {
 
 // Cache manages the local cache of the remote registry.
 type Cache struct {
-	root      string // Cache directory path
-	log       *zerolog.Logger
-	repo      gitRepository // Bare Git repository
-	ignores   []string      // Registry-level ignores
+	root      string          // Cache directory path
+	ctx       context.Context // Context for dependency injection (logger)
+	repo      gitRepository   // Bare Git repository
+	ignores   []string        // Registry-level ignores
 	committer RegistryCommitter
 	url       string // Registry URL
 }
 
 // Open opens or initializes the registry cache.
-func Open(ctx context.Context, cacheDir string, cfg Config, log *zerolog.Logger) (*Cache, error) {
+func Open(ctx context.Context, cacheDir string, cfg Config) (*Cache, error) {
 	// Create cache directory hash from URL
 	urlHash := sha256.Sum256([]byte(cfg.URL))
 	cacheRoot := filepath.Join(cacheDir, fmt.Sprintf("%x", urlHash[:8]))
@@ -65,18 +65,20 @@ func Open(ctx context.Context, cacheDir string, cfg Config, log *zerolog.Logger)
 	// Check if cache exists
 	if _, statErr := os.Stat(cacheRoot); os.IsNotExist(statErr) {
 		// Clone the repository
-		log.Info().Str("url", cfg.URL).Msg("Cloning registry")
+		if log := logger.Log(ctx); log != nil {
+			log.Info().Str("url", cfg.URL).Msg("Cloning registry")
+		}
 		repo, err = git.Clone(ctx, cfg.URL, cacheRoot, git.CloneOptions{
 			Bare:   true,
 			NoTags: true,
 			Depth:  1,
-		}, log)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("clone registry: %w", err)
 		}
 	} else {
 		// Open existing cache
-		repo, err = git.Open(ctx, cacheRoot, git.OpenOptions{Bare: true}, log)
+		repo, err = git.Open(ctx, cacheRoot, git.OpenOptions{Bare: true})
 		if err != nil {
 			return nil, fmt.Errorf("open registry cache: %w", err)
 		}
@@ -84,7 +86,7 @@ func Open(ctx context.Context, cacheDir string, cfg Config, log *zerolog.Logger)
 
 	cache := &Cache{
 		root: cacheRoot,
-		log:  log,
+		ctx:  ctx,
 		repo: repo,
 		url:  cfg.URL,
 		committer: RegistryCommitter{
@@ -95,7 +97,9 @@ func Open(ctx context.Context, cacheDir string, cfg Config, log *zerolog.Logger)
 
 	// Load registry config if exists
 	if err := cache.loadConfig(ctx); err != nil {
-		log.Warn().Err(err).Msg("Failed to load registry config")
+		if log := logger.Log(ctx); log != nil {
+			log.Warn().Err(err).Msg("Failed to load registry config")
+		}
 	}
 
 	return cache, nil
@@ -138,7 +142,9 @@ func (r *Cache) loadConfig(ctx context.Context) error {
 
 // Refresh refreshes the cache from remote.
 func (r *Cache) Refresh(ctx context.Context) error {
-	r.log.Debug().Msg("Refreshing registry cache")
+	if log := logger.Log(r.ctx); log != nil {
+		log.Debug().Msg("Refreshing registry cache")
+	}
 	return r.repo.Fetch(ctx, git.FetchOptions{
 		Remote: "origin",
 		Depth:  1,

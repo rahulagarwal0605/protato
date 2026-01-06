@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
@@ -18,16 +17,16 @@ type ListCmd struct {
 }
 
 // Run executes the list command.
-func (c *ListCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
+func (c *ListCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	if c.Local {
-		return c.listLocal(log, ctx)
+		return c.listLocal(ctx)
 	}
-	return c.listRegistry(globals, log, ctx)
+	return c.listRegistry(ctx, globals)
 }
 
 // listLocal lists projects in the local workspace.
-func (c *ListCmd) listLocal(log *zerolog.Logger, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+func (c *ListCmd) listLocal(ctx context.Context) error {
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
 	if err != nil {
 		return err
 	}
@@ -68,16 +67,16 @@ func (c *ListCmd) printLocalProjects(owned []local.ProjectPath, received []*loca
 }
 
 // listRegistry lists projects from the remote registry.
-func (c *ListCmd) listRegistry(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	reg, err := OpenRegistry(ctx, globals, log)
+func (c *ListCmd) listRegistry(ctx context.Context, globals *GlobalOptions) error {
+	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
 		return err
 	}
 
 	if !c.Offline {
-		log.Debug().Msg("Refreshing registry")
+		logger.Log(ctx).Debug().Msg("Refreshing registry")
 		if err := reg.Refresh(ctx); err != nil {
-			log.Warn().Err(err).Msg("Failed to refresh registry")
+			logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
 		}
 	}
 

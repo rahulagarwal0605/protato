@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rs/zerolog"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 // Repository represents a Git repository.
@@ -20,12 +20,12 @@ type Repository struct {
 	gitDir  string          // .git directory
 	bare    bool            // Bare repository flag
 	rootDir string          // Working directory
-	log     *zerolog.Logger // Logger
+	ctx     context.Context // Context for dependency injection (logger, execer)
 	exec    Execer          // Command executor
 }
 
 // Clone clones a repository.
-func Clone(ctx context.Context, url, path string, opts CloneOptions, log *zerolog.Logger) (*Repository, error) {
+func Clone(ctx context.Context, url, path string, opts CloneOptions) (*Repository, error) {
 	args := []string{"clone"}
 	if opts.Bare {
 		args = append(args, "--bare")
@@ -44,23 +44,23 @@ func Clone(ctx context.Context, url, path string, opts CloneOptions, log *zerolo
 	}
 	args = append(args, url, path)
 
-	cmd := newGitCmd(ctx, log, args...)
+	cmd := newGitCmd(ctx, args...)
 	if err := cmd.Run(GetExecer(ctx)); err != nil {
 		return nil, fmt.Errorf("clone: %w", err)
 	}
 
-	return Open(ctx, path, OpenOptions{Bare: opts.Bare}, log)
+	return Open(ctx, path, OpenOptions{Bare: opts.Bare})
 }
 
 // Open opens an existing repository.
-func Open(ctx context.Context, path string, opts OpenOptions, log *zerolog.Logger) (*Repository, error) {
+func Open(ctx context.Context, path string, opts OpenOptions) (*Repository, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("abs path: %w", err)
 	}
 
 	repo := &Repository{
-		log:  log,
+		ctx:  ctx,
 		exec: GetExecer(ctx),
 		bare: opts.Bare,
 	}
@@ -105,7 +105,12 @@ func (r *Repository) IsBare() bool {
 
 // gitCmd creates a new Git command.
 func (r *Repository) gitCmd(ctx context.Context, args ...string) *gitCmd {
-	cmd := newGitCmd(ctx, r.log, args...)
+	// Use repository's context if available, otherwise use provided context
+	cmdCtx := r.ctx
+	if cmdCtx == nil {
+		cmdCtx = ctx
+	}
+	cmd := newGitCmd(cmdCtx, args...)
 	if r.bare {
 		cmd.env = append(cmd.env, "GIT_DIR="+r.gitDir)
 	} else {
@@ -366,17 +371,15 @@ func NormalizeRemoteURL(url string) string {
 // gitCmd is a helper for executing git commands.
 type gitCmd struct {
 	ctx  context.Context
-	log  *zerolog.Logger
 	args []string
 	dir  string
 	env  []string
 }
 
 // newGitCmd creates a new git command.
-func newGitCmd(ctx context.Context, log *zerolog.Logger, args ...string) *gitCmd {
+func newGitCmd(ctx context.Context, args ...string) *gitCmd {
 	return &gitCmd{
 		ctx:  ctx,
-		log:  log,
 		args: args,
 	}
 }
@@ -407,8 +410,8 @@ func (c *gitCmd) toExecCmd() *exec.Cmd {
 
 // Run executes the command.
 func (c *gitCmd) Run(e Execer) error {
-	if c.log != nil {
-		c.log.Debug().
+	if log := logger.Log(c.ctx); log != nil {
+		log.Debug().
 			Strs("args", c.args).
 			Str("dir", c.dir).
 			Msg("Executing git command")
@@ -418,8 +421,8 @@ func (c *gitCmd) Run(e Execer) error {
 
 // Output executes the command and returns its output.
 func (c *gitCmd) Output(e Execer) ([]byte, error) {
-	if c.log != nil {
-		c.log.Debug().
+	if log := logger.Log(c.ctx); log != nil {
+		log.Debug().
 			Strs("args", c.args).
 			Str("dir", c.dir).
 			Msg("Executing git command")
@@ -431,8 +434,8 @@ func (c *gitCmd) Output(e Execer) ([]byte, error) {
 func (c *gitCmd) OutputWithStdin(e Execer, stdin io.Reader) ([]byte, error) {
 	cmd := c.toExecCmd()
 	cmd.Stdin = stdin
-	if c.log != nil {
-		c.log.Debug().
+	if log := logger.Log(c.ctx); log != nil {
+		log.Debug().
 			Strs("args", c.args).
 			Str("dir", c.dir).
 			Msg("Executing git command with stdin")
@@ -444,8 +447,8 @@ func (c *gitCmd) OutputWithStdin(e Execer, stdin io.Reader) ([]byte, error) {
 func (c *gitCmd) RunWithStdout(e Execer, stdout io.Writer) error {
 	cmd := c.toExecCmd()
 	cmd.Stdout = stdout
-	if c.log != nil {
-		c.log.Debug().
+	if log := logger.Log(c.ctx); log != nil {
+		log.Debug().
 			Strs("args", c.args).
 			Str("dir", c.dir).
 			Msg("Executing git command with stdout")

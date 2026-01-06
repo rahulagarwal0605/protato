@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
@@ -27,13 +26,13 @@ type pullPlan struct {
 }
 
 // Run executes the pull command.
-func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{CreateIfMissing: true})
+func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{CreateIfMissing: true})
 	if err != nil {
 		return err
 	}
 
-	reg, err := OpenAndRefreshRegistry(ctx, globals, log)
+	reg, err := OpenAndRefreshRegistry(ctx, globals)
 	if err != nil {
 		return err
 	}
@@ -42,40 +41,40 @@ func (c *PullCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 	if err != nil {
 		return fmt.Errorf("get snapshot: %w", err)
 	}
-	log.Debug().Str("snapshot", snapshot.Short()).Msg("Using registry snapshot")
+	logger.Log(ctx).Debug().Str("snapshot", snapshot.Short()).Msg("Using registry snapshot")
 
-	projectsToPull, err := c.resolveProjects(ctx, wctx.WS, reg, snapshot, log)
+	projectsToPull, err := c.resolveProjects(ctx, wctx.WS, reg, snapshot)
 	if err != nil {
 		return err
 	}
 
 	if len(projectsToPull) == 0 {
-		log.Info().Msg("No projects to pull")
+		logger.Log(ctx).Info().Msg("No projects to pull")
 		return nil
 	}
 
-	plans, err := c.createPullPlans(ctx, wctx.WS, reg, snapshot, projectsToPull, log)
+	plans, err := c.createPullPlans(ctx, wctx.WS, reg, snapshot, projectsToPull)
 	if err != nil {
 		return err
 	}
 
-	return c.executePullPlans(ctx, wctx.WS, reg, snapshot, plans, log)
+	return c.executePullPlans(ctx, wctx.WS, reg, snapshot, plans)
 }
 
 // resolveProjects determines which projects need to be pulled.
-func (c *PullCmd) resolveProjects(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, log *zerolog.Logger) ([]registry.ProjectPath, error) {
-	projectsToPull := c.getInitialProjects(ws, log)
+func (c *PullCmd) resolveProjects(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash) ([]registry.ProjectPath, error) {
+	projectsToPull := c.getInitialProjects(ctx, ws)
 	ownedPaths := c.buildOwnedPathsSet(ws)
 
 	if !c.NoDeps && len(projectsToPull) > 0 {
-		projectsToPull = c.discoverDependencies(ctx, reg, snapshot, projectsToPull, log)
+		projectsToPull = c.discoverDependencies(ctx, reg, snapshot, projectsToPull)
 	}
 
 	return c.filterOwnedProjects(projectsToPull, ownedPaths), nil
 }
 
 // getInitialProjects returns the initial list of projects to pull.
-func (c *PullCmd) getInitialProjects(ws *local.Workspace, log *zerolog.Logger) []registry.ProjectPath {
+func (c *PullCmd) getInitialProjects(ctx context.Context, ws *local.Workspace) []registry.ProjectPath {
 	if len(c.Projects) > 0 {
 		projects := make([]registry.ProjectPath, len(c.Projects))
 		for i, p := range c.Projects {
@@ -86,7 +85,7 @@ func (c *PullCmd) getInitialProjects(ws *local.Workspace, log *zerolog.Logger) [
 
 	received, err := ws.ReceivedProjects()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to get received projects")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to get received projects")
 		return nil
 	}
 
@@ -111,12 +110,12 @@ func (c *PullCmd) buildOwnedPathsSet(ws *local.Workspace) map[string]bool {
 }
 
 // discoverDependencies discovers and adds transitive dependencies.
-func (c *PullCmd) discoverDependencies(ctx context.Context, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) []registry.ProjectPath {
-	log.Info().Msg("Discovering dependencies")
+func (c *PullCmd) discoverDependencies(ctx context.Context, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) []registry.ProjectPath {
+	logger.Log(ctx).Info().Msg("Discovering dependencies")
 
-	allProjects, err := protoc.DiscoverDependencies(ctx, reg, snapshot, projects, log)
+	allProjects, err := protoc.DiscoverDependencies(ctx, reg, snapshot, projects)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to discover dependencies")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to discover dependencies")
 		return projects
 	}
 
@@ -135,7 +134,7 @@ func (c *PullCmd) filterOwnedProjects(projects []registry.ProjectPath, ownedPath
 }
 
 // createPullPlans creates execution plans for each project.
-func (c *PullCmd) createPullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath, log *zerolog.Logger) ([]pullPlan, error) {
+func (c *PullCmd) createPullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) ([]pullPlan, error) {
 	var plans []pullPlan
 
 	for _, project := range projects {
@@ -144,7 +143,7 @@ func (c *PullCmd) createPullPlans(ctx context.Context, ws *local.Workspace, reg 
 			return nil, err
 		}
 
-		if err := c.validateDeletions(plan, log); err != nil {
+		if err := c.validateDeletions(ctx, plan); err != nil {
 			return nil, err
 		}
 
@@ -196,9 +195,9 @@ func (c *PullCmd) findFilesToDelete(regFiles []registry.ProjectFile, localFiles 
 }
 
 // validateDeletions checks if deletions are allowed.
-func (c *PullCmd) validateDeletions(plan pullPlan, log *zerolog.Logger) error {
+func (c *PullCmd) validateDeletions(ctx context.Context, plan pullPlan) error {
 	if len(plan.toDelete) > 0 && !c.Force {
-		log.Error().
+		logger.Log(ctx).Error().
 			Str("project", string(plan.project)).
 			Int("count", len(plan.toDelete)).
 			Msg("Would delete files. Use --force to proceed")
@@ -208,11 +207,11 @@ func (c *PullCmd) validateDeletions(plan pullPlan, log *zerolog.Logger) error {
 }
 
 // executePullPlans executes all pull plans.
-func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plans []pullPlan, log *zerolog.Logger) error {
+func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plans []pullPlan) error {
 	var totalChanged, totalDeleted int
 
 	for _, plan := range plans {
-		stats, err := c.executeProjectPull(ctx, ws, reg, snapshot, plan, log)
+		stats, err := c.executeProjectPull(ctx, ws, reg, snapshot, plan)
 		if err != nil {
 			return err
 		}
@@ -220,7 +219,7 @@ func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg
 		totalDeleted += stats.FilesDeleted
 	}
 
-	log.Info().
+	logger.Log(ctx).Info().
 		Int("projects", len(plans)).
 		Int("changed", totalChanged).
 		Int("deleted", totalDeleted).
@@ -230,8 +229,8 @@ func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg
 }
 
 // executeProjectPull pulls a single project.
-func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plan pullPlan, log *zerolog.Logger) (*local.ReceiveStats, error) {
-	log.Info().
+func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plan pullPlan) (*local.ReceiveStats, error) {
+	logger.Log(ctx).Info().
 		Str("project", string(plan.project)).
 		Int("files", len(plan.files)).
 		Msg("Pulling project")
@@ -245,7 +244,7 @@ func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, r
 		return nil, err
 	}
 
-	c.deleteFiles(recv, plan.toDelete, log)
+	c.deleteFiles(ctx, recv, plan.toDelete)
 
 	return recv.Finish()
 }
@@ -271,10 +270,10 @@ func (c *PullCmd) pullFiles(ctx context.Context, reg *registry.Cache, recv *loca
 }
 
 // deleteFiles removes files that no longer exist in the registry.
-func (c *PullCmd) deleteFiles(recv *local.ProjectReceiver, toDelete []string, log *zerolog.Logger) {
+func (c *PullCmd) deleteFiles(ctx context.Context, recv *local.ProjectReceiver, toDelete []string) {
 	for _, path := range toDelete {
 		if err := recv.DeleteFile(path); err != nil {
-			log.Warn().Err(err).Str("path", path).Msg("Failed to delete file")
+			logger.Log(ctx).Warn().Err(err).Str("path", path).Msg("Failed to delete file")
 		}
 	}
 }

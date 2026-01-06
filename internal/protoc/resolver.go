@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/rahulagarwal0605/protato/internal/git"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
@@ -20,18 +21,18 @@ import (
 type RegistryResolver struct {
 	cache    *registry.Cache
 	snapshot git.Hash
-	log      *zerolog.Logger
+	ctx      context.Context // Context for dependency injection (logger)
 
 	mu       sync.Mutex
 	projects map[registry.ProjectPath]struct{} // Discovered projects
 }
 
 // NewRegistryResolver creates a new registry resolver.
-func NewRegistryResolver(cache *registry.Cache, snapshot git.Hash, log *zerolog.Logger) *RegistryResolver {
+func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot git.Hash) *RegistryResolver {
 	return &RegistryResolver{
 		cache:    cache,
 		snapshot: snapshot,
-		log:      log,
+		ctx:      ctx,
 		projects: make(map[registry.ProjectPath]struct{}),
 	}
 }
@@ -40,7 +41,9 @@ func NewRegistryResolver(cache *registry.Cache, snapshot git.Hash, log *zerolog.
 func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchResult, error) {
 	ctx := context.Background()
 
-	r.log.Debug().Str("path", filePath).Msg("Resolving import")
+	if log := logger.Log(r.ctx); log != nil {
+		log.Debug().Str("path", filePath).Msg("Resolving import")
+	}
 
 	// Look up project for this path
 	res, err := r.cache.LookupProject(ctx, &registry.LookupProjectRequest{
@@ -141,9 +144,9 @@ func DiscoverDependencies(
 	cache *registry.Cache,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
-	log *zerolog.Logger,
 ) ([]registry.ProjectPath, error) {
-	resolver := NewRegistryResolver(cache, snapshot, log)
+	log := logger.Log(ctx)
+	resolver := NewRegistryResolver(ctx, cache, snapshot)
 
 	// Get all proto files from the requested projects
 	var protoFiles []string
@@ -173,7 +176,10 @@ func DiscoverDependencies(
 	}
 
 	// Compile to discover imports
-	rep := &LogReporter{Log: log}
+	var rep *LogReporter
+	if log != nil {
+		rep = &LogReporter{Log: log}
+	}
 	compiler := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(resolver),
 		Reporter: rep,
@@ -181,9 +187,11 @@ func DiscoverDependencies(
 
 	// Compile files (we don't care about the result, just the side effects)
 	_, err := compiler.Compile(ctx, protoFiles...)
-	if err != nil && !rep.Failed() {
+	if err != nil && (rep == nil || !rep.Failed()) {
 		// Only return error if it's not a compilation error
-		log.Debug().Err(err).Msg("Compilation error during dependency discovery")
+		if log != nil {
+			log.Debug().Err(err).Msg("Compilation error during dependency discovery")
+		}
 	}
 
 	return resolver.DiscoveredProjects(), nil
@@ -195,9 +203,9 @@ func ValidateProtos(
 	cache *registry.Cache,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
-	log *zerolog.Logger,
 ) error {
-	resolver := NewRegistryResolver(cache, snapshot, log)
+	log := logger.Log(ctx)
+	resolver := NewRegistryResolver(ctx, cache, snapshot)
 
 	// Get all proto files
 	var protoFiles []string

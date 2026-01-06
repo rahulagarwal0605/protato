@@ -6,9 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/rs/zerolog"
-
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 // MineCmd lists files owned by this repository.
@@ -18,8 +17,8 @@ type MineCmd struct {
 }
 
 // Run executes the mine command.
-func (c *MineCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, log, local.OpenOptions{})
+func (c *MineCmd) Run(globals *GlobalOptions, ctx context.Context) error {
+	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
 	if err != nil {
 		return err
 	}
@@ -36,17 +35,17 @@ func (c *MineCmd) Run(globals *GlobalOptions, log *zerolog.Logger, ctx context.C
 		return nil
 	}
 
-	return c.printFiles(wctx, projects, log)
+	return c.printFiles(ctx, wctx, projects)
 }
 
 // printFiles lists and prints all files from owned projects.
-func (c *MineCmd) printFiles(wctx *WorkspaceContext, projects []local.ProjectPath, log *zerolog.Logger) error {
+func (c *MineCmd) printFiles(ctx context.Context, wctx *WorkspaceContext, projects []local.ProjectPath) error {
 	var allFiles []string
 
 	for _, project := range projects {
 		files, err := wctx.WS.ListOwnedProjectFiles(project)
 		if err != nil {
-			log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list files")
+			logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list files")
 			continue
 		}
 
