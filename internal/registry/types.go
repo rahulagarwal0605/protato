@@ -20,17 +20,11 @@ type Project struct {
 	RepositoryURL string      // Source repository URL
 }
 
-// Config represents the protato.registry.yaml configuration.
-type Config struct {
-	URL       string            `yaml:"-"` // Registry URL (not in file)
-	Ignores   []string          `yaml:"ignores,omitempty"`
-	Committer RegistryCommitter `yaml:"committer,omitempty"`
-}
-
-// RegistryCommitter represents the committer identity for registry commits.
+// RegistryCommitter represents the fallback committer identity for registry commits.
+// This is only used internally as a fallback when the current Git user cannot be determined.
 type RegistryCommitter struct {
-	Name  string `yaml:"name"`
-	Email string `yaml:"email"`
+	Name  string
+	Email string
 }
 
 // ProjectMeta represents the protato.root.yaml file.
@@ -88,6 +82,7 @@ type SetProjectRequest struct {
 	Project  *Project           // Project metadata
 	Files    []LocalProjectFile // Complete file list
 	Snapshot git.Hash           // Base snapshot
+	Author   *git.Author        // Optional: Git author/committer (uses default "Protato Bot" if nil)
 }
 
 // LocalProjectFile represents a local file to upload.

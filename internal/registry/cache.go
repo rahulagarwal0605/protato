@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	registryConfigFile = "protato.registry.yaml"
-	projectMetaFile    = "protato.root.yaml"
-	protosDir          = "protos"
+	projectMetaFile = "protato.root.yaml"
+	protosDir       = "protos"
 )
 
 var (
@@ -48,15 +47,14 @@ type Cache struct {
 	root      string          // Cache directory path
 	ctx       context.Context // Context for dependency injection (logger)
 	repo      gitRepository   // Bare Git repository
-	ignores   []string        // Registry-level ignores
 	committer RegistryCommitter
 	url       string // Registry URL
 }
 
 // Open opens or initializes the registry cache.
-func Open(ctx context.Context, cacheDir string, cfg Config) (*Cache, error) {
+func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, error) {
 	// Create cache directory hash from URL
-	urlHash := sha256.Sum256([]byte(cfg.URL))
+	urlHash := sha256.Sum256([]byte(registryURL))
 	cacheRoot := filepath.Join(cacheDir, fmt.Sprintf("%x", urlHash[:8]))
 
 	var repo *git.Repository
@@ -65,10 +63,8 @@ func Open(ctx context.Context, cacheDir string, cfg Config) (*Cache, error) {
 	// Check if cache exists
 	if _, statErr := os.Stat(cacheRoot); os.IsNotExist(statErr) {
 		// Clone the repository
-		if log := logger.Log(ctx); log != nil {
-			log.Info().Str("url", cfg.URL).Msg("Cloning registry")
-		}
-		repo, err = git.Clone(ctx, cfg.URL, cacheRoot, git.CloneOptions{
+		logger.Log(ctx).Info().Msg("Cloning registry")
+		repo, err = git.Clone(ctx, registryURL, cacheRoot, git.CloneOptions{
 			Bare:   true,
 			NoTags: true,
 			Depth:  1,
@@ -88,63 +84,19 @@ func Open(ctx context.Context, cacheDir string, cfg Config) (*Cache, error) {
 		root: cacheRoot,
 		ctx:  ctx,
 		repo: repo,
-		url:  cfg.URL,
+		url:  registryURL,
 		committer: RegistryCommitter{
 			Name:  "Protato Bot",
 			Email: "protato@example.com",
 		},
 	}
 
-	// Load registry config if exists
-	if err := cache.loadConfig(ctx); err != nil {
-		if log := logger.Log(ctx); log != nil {
-			log.Warn().Err(err).Msg("Failed to load registry config")
-		}
-	}
-
 	return cache, nil
-}
-
-// loadConfig loads the registry configuration.
-func (r *Cache) loadConfig(ctx context.Context) error {
-	snapshot, err := r.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
-
-	var buf bytes.Buffer
-	if err := r.repo.ReadObject(ctx, git.BlobType, snapshot, &buf); err != nil {
-		// Try reading config file
-		entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
-			Paths: []string{registryConfigFile},
-		})
-		if err != nil || len(entries) == 0 {
-			return nil // No config file
-		}
-
-		if err := r.repo.ReadObject(ctx, git.BlobType, entries[0].Hash, &buf); err != nil {
-			return err
-		}
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(buf.Bytes(), &cfg); err != nil {
-		return err
-	}
-
-	r.ignores = cfg.Ignores
-	if cfg.Committer.Name != "" {
-		r.committer = cfg.Committer
-	}
-
-	return nil
 }
 
 // Refresh refreshes the cache from remote.
 func (r *Cache) Refresh(ctx context.Context) error {
-	if log := logger.Log(r.ctx); log != nil {
-		log.Debug().Msg("Refreshing registry cache")
-	}
+	logger.Log(r.ctx).Debug().Msg("Refreshing registry cache")
 	return r.repo.Fetch(ctx, git.FetchOptions{
 		Remote: "origin",
 		Depth:  1,
@@ -384,8 +336,13 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 		Mode: 0100644,
 	})
 
-	// Write files
+	// Write files (only .proto files)
 	for _, file := range req.Files {
+		// Only allow .proto files to be committed
+		if !strings.HasSuffix(file.Path, ".proto") {
+			continue
+		}
+
 		f, err := os.Open(file.LocalPath)
 		if err != nil {
 			return nil, fmt.Errorf("open file %s: %w", file.LocalPath, err)
@@ -436,14 +393,21 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 
 	// Create commit
 	message := fmt.Sprintf("%s: %d files", req.Project.Path, len(req.Files))
+
+	// Use provided author or fall back to registry committer
+	author := git.Author{
+		Name:  r.committer.Name,
+		Email: r.committer.Email,
+	}
+	if req.Author != nil {
+		author = *req.Author
+	}
+
 	newCommit, err := r.repo.CommitTree(ctx, git.CommitTreeRequest{
 		Tree:    newTree,
 		Parents: []git.Hash{snapshot},
 		Message: message,
-		Author: git.Author{
-			Name:  r.committer.Name,
-			Email: r.committer.Email,
-		},
+		Author:  author,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create commit: %w", err)

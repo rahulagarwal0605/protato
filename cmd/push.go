@@ -26,6 +26,7 @@ type pushContext struct {
 	repoURL       string
 	currentCommit git.Hash
 	ownedProjects []local.ProjectPath
+	author        *git.Author // Current Git user for commits
 }
 
 // Run executes the push command.
@@ -70,12 +71,23 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 		return nil, err
 	}
 
+	// Get current Git user (works for both GitHub Actions and local)
+	var author *git.Author
+	user, err := wctx.Repo.GetUser(ctx)
+	if err != nil {
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to get Git user, will use registry committer")
+		// Continue without author - will use registry committer as fallback
+	} else {
+		author = &user
+	}
+
 	return &pushContext{
 		wctx:          wctx,
 		reg:           reg,
 		repoURL:       repoURL,
 		currentCommit: currentCommit,
 		ownedProjects: ownedProjects,
+		author:        author,
 	}, nil
 }
 
@@ -192,6 +204,7 @@ func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushContext, lo
 		},
 		Files:    regFiles,
 		Snapshot: snapshot,
+		Author:   pctx.author,
 	})
 	if err != nil {
 		return "", fmt.Errorf("set project %s: %w", registryPath, err)

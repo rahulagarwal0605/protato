@@ -36,12 +36,6 @@ func Clone(ctx context.Context, url, path string, opts CloneOptions) (*Repositor
 	if opts.Depth > 0 {
 		args = append(args, "--depth", strconv.Itoa(opts.Depth))
 	}
-	if opts.Filter != "" {
-		args = append(args, "--filter", opts.Filter)
-	}
-	if opts.NoCheckout {
-		args = append(args, "--no-checkout")
-	}
 	args = append(args, url, path)
 
 	cmd := newGitCmd(ctx, args...)
@@ -355,6 +349,40 @@ func (r *Repository) GetRemoteURL(ctx context.Context, remote string) (string, e
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GetUser gets the current Git user (name and email).
+// Checks environment variables first (for GitHub Actions), then falls back to git config.
+func (r *Repository) GetUser(ctx context.Context) (Author, error) {
+	var author Author
+
+	// Check GitHub Actions environment variables first
+	if name := os.Getenv("GITHUB_ACTOR"); name != "" {
+		author.Name = name
+		// GitHub Actions doesn't set email by default, construct it
+		if email := os.Getenv("GITHUB_ACTOR_EMAIL"); email != "" {
+			author.Email = email
+		} else {
+			// Default GitHub Actions email format
+			author.Email = fmt.Sprintf("%s@users.noreply.github.com", name)
+		}
+		return author, nil
+	}
+
+	// Fall back to git config
+	name, err := r.gitCmd(ctx, "config", "user.name").Output(r.exec)
+	if err != nil {
+		return author, fmt.Errorf("get user name: %w", err)
+	}
+	author.Name = strings.TrimSpace(string(name))
+
+	email, err := r.gitCmd(ctx, "config", "user.email").Output(r.exec)
+	if err != nil {
+		return author, fmt.Errorf("get user email: %w", err)
+	}
+	author.Email = strings.TrimSpace(string(email))
+
+	return author, nil
+}
+
 // NormalizeRemoteURL normalizes a Git URL to HTTPS format.
 func NormalizeRemoteURL(url string) string {
 	// Convert SSH URLs to HTTPS
@@ -410,23 +438,19 @@ func (c *gitCmd) toExecCmd() *exec.Cmd {
 
 // Run executes the command.
 func (c *gitCmd) Run(e Execer) error {
-	if log := logger.Log(c.ctx); log != nil {
-		log.Debug().
-			Strs("args", c.args).
-			Str("dir", c.dir).
-			Msg("Executing git command")
-	}
+	logger.Log(c.ctx).Debug().
+		Strs("args", c.args).
+		Str("dir", c.dir).
+		Msg("Executing git command")
 	return e.Run(c.toExecCmd())
 }
 
 // Output executes the command and returns its output.
 func (c *gitCmd) Output(e Execer) ([]byte, error) {
-	if log := logger.Log(c.ctx); log != nil {
-		log.Debug().
-			Strs("args", c.args).
-			Str("dir", c.dir).
-			Msg("Executing git command")
-	}
+	logger.Log(c.ctx).Debug().
+		Strs("args", c.args).
+		Str("dir", c.dir).
+		Msg("Executing git command")
 	return e.Output(c.toExecCmd())
 }
 
@@ -434,12 +458,10 @@ func (c *gitCmd) Output(e Execer) ([]byte, error) {
 func (c *gitCmd) OutputWithStdin(e Execer, stdin io.Reader) ([]byte, error) {
 	cmd := c.toExecCmd()
 	cmd.Stdin = stdin
-	if log := logger.Log(c.ctx); log != nil {
-		log.Debug().
-			Strs("args", c.args).
-			Str("dir", c.dir).
-			Msg("Executing git command with stdin")
-	}
+	logger.Log(c.ctx).Debug().
+		Strs("args", c.args).
+		Str("dir", c.dir).
+		Msg("Executing git command with stdin")
 	return e.Output(cmd)
 }
 
@@ -447,11 +469,9 @@ func (c *gitCmd) OutputWithStdin(e Execer, stdin io.Reader) ([]byte, error) {
 func (c *gitCmd) RunWithStdout(e Execer, stdout io.Writer) error {
 	cmd := c.toExecCmd()
 	cmd.Stdout = stdout
-	if log := logger.Log(c.ctx); log != nil {
-		log.Debug().
-			Strs("args", c.args).
-			Str("dir", c.dir).
-			Msg("Executing git command with stdout")
-	}
+	logger.Log(c.ctx).Debug().
+		Strs("args", c.args).
+		Str("dir", c.dir).
+		Msg("Executing git command with stdout")
 	return e.Run(cmd)
 }

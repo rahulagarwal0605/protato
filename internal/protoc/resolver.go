@@ -41,9 +41,7 @@ func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot gi
 func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchResult, error) {
 	ctx := context.Background()
 
-	if log := logger.Log(r.ctx); log != nil {
-		log.Debug().Str("path", filePath).Msg("Resolving import")
-	}
+	logger.Log(r.ctx).Debug().Str("path", filePath).Msg("Resolving import")
 
 	// Look up project for this path
 	res, err := r.cache.LookupProject(ctx, &registry.LookupProjectRequest{
@@ -145,7 +143,6 @@ func DiscoverDependencies(
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
 ) ([]registry.ProjectPath, error) {
-	log := logger.Log(ctx)
 	resolver := NewRegistryResolver(ctx, cache, snapshot)
 
 	// Get all proto files from the requested projects
@@ -176,10 +173,7 @@ func DiscoverDependencies(
 	}
 
 	// Compile to discover imports
-	var rep *LogReporter
-	if log != nil {
-		rep = &LogReporter{Log: log}
-	}
+	rep := &LogReporter{Log: logger.Log(ctx)}
 	compiler := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(resolver),
 		Reporter: rep,
@@ -187,11 +181,9 @@ func DiscoverDependencies(
 
 	// Compile files (we don't care about the result, just the side effects)
 	_, err := compiler.Compile(ctx, protoFiles...)
-	if err != nil && (rep == nil || !rep.Failed()) {
+	if err != nil && !rep.Failed() {
 		// Only return error if it's not a compilation error
-		if log != nil {
-			log.Debug().Err(err).Msg("Compilation error during dependency discovery")
-		}
+		logger.Log(ctx).Debug().Err(err).Msg("Compilation error during dependency discovery")
 	}
 
 	return resolver.DiscoveredProjects(), nil

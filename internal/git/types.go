@@ -111,11 +111,9 @@ func (e *DefaultExecer) Output(cmd *exec.Cmd) ([]byte, error) {
 
 // CloneOptions contains options for cloning a repository.
 type CloneOptions struct {
-	Bare       bool   // Clone as bare repository
-	NoTags     bool   // Don't clone tags
-	Depth      int    // Shallow clone depth
-	Filter     string // Partial clone filter
-	NoCheckout bool   // Don't checkout after clone
+	Bare   bool // Clone as bare repository
+	NoTags bool // Don't clone tags
+	Depth  int  // Shallow clone depth
 }
 
 // OpenOptions contains options for opening a repository.

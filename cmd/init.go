@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
@@ -29,7 +28,7 @@ type InitCmd struct {
 // Run executes the init command.
 func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	// Find Git repository root
-	root, err := c.findRepoRoot(ctx)
+	root, err := FindRepoRoot(ctx)
 	if err != nil {
 		return err
 	}
@@ -49,37 +48,19 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	// Print success messages
-	c.printSuccess(ws, cfg)
-
-	// Initialize registry cache if URL is provided
-	c.initRegistryCache(ctx, globals)
-
-	// Create explicit projects if specified
+	// Create explicit projects if specified (must happen before success messages)
 	if err := c.createProjects(ctx, ws, cfg); err != nil {
 		return err
 	}
 
-	// Print next steps
-	c.printNextSteps(ws, cfg)
+	// Initialize registry cache if URL is provided
+	c.initRegistryCache(ctx, globals)
+
+	// Print completion messages and next steps
+	c.printCompletion(ws, cfg)
 
 	logger.Log(ctx).Info().Msg("Workspace initialized successfully")
 	return nil
-}
-
-// findRepoRoot finds the Git repository root directory.
-func (c *InitCmd) findRepoRoot(ctx context.Context) (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("get cwd: %w", err)
-	}
-
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{})
-	if err != nil {
-		return "", fmt.Errorf("open git repo: %w", err)
-	}
-
-	return repo.Root(), nil
 }
 
 // gatherConfig collects configuration from flags or interactive prompts.
@@ -214,13 +195,7 @@ func (c *InitCmd) promptOrShowIncludes(root string, reader *bufio.Reader, cfg *l
 
 			input := readLine(reader)
 			if input != "" {
-				var includes []string
-				for _, p := range strings.Split(input, ",") {
-					p = strings.TrimSpace(p)
-					if p != "" {
-						includes = append(includes, p)
-					}
-				}
+				includes := ParseCommaSeparated(input)
 				cfg.Includes = append(cfg.Includes, includes...)
 			}
 		}
@@ -236,18 +211,18 @@ func (c *InitCmd) promptOrShowExcludes(root string, reader *bufio.Reader, cfg *l
 
 		input := readLine(reader)
 		if input != "" {
-			var excludes []string
-			for _, p := range strings.Split(input, ",") {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					excludes = append(excludes, p)
-				}
-			}
+			excludes := ParseCommaSeparated(input)
 			cfg.Excludes = append(cfg.Excludes, excludes...)
 		}
 	} else {
 		fmt.Printf("Excludes: %v (from flags)\n", cfg.Excludes)
 	}
+}
+
+// readLine reads a line from the reader and trims whitespace.
+func readLine(reader *bufio.Reader) string {
+	input, _ := reader.ReadString('\n')
+	return strings.TrimSpace(input)
 }
 
 // initWorkspace creates the protato workspace.
@@ -259,33 +234,6 @@ func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Con
 	return ws, nil
 }
 
-// printSuccess prints success messages after initialization.
-func (c *InitCmd) printSuccess(ws *local.Workspace, cfg *local.Config) {
-	fmt.Printf("✅ Created protato.yaml\n")
-	fmt.Printf("✅ Created %s/ directory (for your protos)\n", ws.OwnedDir())
-	fmt.Printf("✅ Created %s/ directory (for vendor protos)\n", ws.VendorDir())
-
-	if cfg.AutoDiscover {
-		fmt.Printf("✅ Auto-discovery enabled (all protos in %s/ will be discovered)\n", ws.OwnedDir())
-	}
-}
-
-// initRegistryCache initializes the registry cache if configured.
-func (c *InitCmd) initRegistryCache(ctx context.Context, globals *GlobalOptions) {
-	if globals.RegistryURL == "" {
-		return
-	}
-
-	logger.Log(ctx).Info().Str("url", globals.RegistryURL).Msg("Initializing registry cache")
-
-	_, err := registry.Open(ctx, globals.CacheDir, registry.Config{
-		URL: globals.RegistryURL,
-	})
-	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Failed to initialize registry cache")
-	}
-}
-
 // createProjects creates project directories for explicit includes when not using auto-discover.
 func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *local.Config) error {
 	// When auto-discover is enabled, projects are discovered automatically
@@ -294,7 +242,7 @@ func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *
 	}
 
 	// When auto-discover is disabled, create directories for literal paths (not glob patterns)
-	literalPaths := c.extractLiteralPaths(cfg.Includes)
+	literalPaths := ExtractLiteralPaths(cfg.Includes)
 	if len(literalPaths) == 0 {
 		return nil
 	}
@@ -313,20 +261,30 @@ func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *
 	return nil
 }
 
-// extractLiteralPaths filters includes to return only literal paths (no glob patterns).
-func (c *InitCmd) extractLiteralPaths(includes []string) []string {
-	var literalPaths []string
-	for _, pattern := range includes {
-		// Check if pattern contains glob characters
-		if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
-			literalPaths = append(literalPaths, pattern)
-		}
+// initRegistryCache initializes the registry cache if configured.
+func (c *InitCmd) initRegistryCache(ctx context.Context, globals *GlobalOptions) {
+	if globals.RegistryURL == "" {
+		return
 	}
-	return literalPaths
+
+	logger.Log(ctx).Info().Msg("Initializing registry cache")
+
+	_, err := registry.Open(ctx, globals.CacheDir, globals.RegistryURL)
+	if err != nil {
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to initialize registry cache")
+	}
 }
 
-// printNextSteps prints guidance for next steps.
-func (c *InitCmd) printNextSteps(ws *local.Workspace, cfg *local.Config) {
+// printCompletion prints success messages and next steps after initialization.
+func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) {
+	fmt.Printf("✅ Created protato.yaml\n")
+	fmt.Printf("✅ Created %s/ directory (for your protos)\n", ws.OwnedDir())
+	fmt.Printf("✅ Created %s/ directory (for vendor protos)\n", ws.VendorDir())
+
+	if cfg.AutoDiscover {
+		fmt.Printf("✅ Auto-discovery enabled (all protos in %s/ will be discovered)\n", ws.OwnedDir())
+	}
+
 	fmt.Println()
 	fmt.Println("Next steps:")
 
@@ -339,10 +297,4 @@ func (c *InitCmd) printNextSteps(ws *local.Workspace, cfg *local.Config) {
 	fmt.Printf("  2. Push to registry: protato push\n")
 	fmt.Printf("  3. Pull dependencies: protato pull <project-path>\n")
 	fmt.Println()
-}
-
-// readLine reads a line from the reader and trims whitespace.
-func readLine(reader *bufio.Reader) string {
-	input, _ := reader.ReadString('\n')
-	return strings.TrimSpace(input)
 }

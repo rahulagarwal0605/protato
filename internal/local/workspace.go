@@ -546,9 +546,7 @@ func (ws *Workspace) ReceivedProjects() ([]*ReceivedProject, error) {
 		// Read lock file
 		lock, err := readLockFile(p)
 		if err != nil {
-			if log := logger.Log(ws.ctx); log != nil {
-				log.Warn().Err(err).Str("path", p).Msg("Failed to read lock file")
-			}
+			logger.Log(ws.ctx).Warn().Err(err).Str("path", p).Msg("Failed to read lock file")
 			return nil
 		}
 
