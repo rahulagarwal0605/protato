@@ -155,9 +155,7 @@ func DiscoverDependencies(
 		}
 
 		for _, f := range filesRes.Files {
-			if strings.HasSuffix(f.Path, ".proto") {
-				protoFiles = append(protoFiles, path.Join(string(project), f.Path))
-			}
+			protoFiles = append(protoFiles, path.Join(string(project), f.Path))
 		}
 
 		// Mark requested projects as discovered
@@ -209,9 +207,7 @@ func ValidateProtos(
 		}
 
 		for _, f := range filesRes.Files {
-			if strings.HasSuffix(f.Path, ".proto") {
-				protoFiles = append(protoFiles, path.Join(string(project), f.Path))
-			}
+			protoFiles = append(protoFiles, path.Join(string(project), f.Path))
 		}
 	}
 
@@ -227,7 +223,7 @@ func ValidateProtos(
 
 	_, err := compiler.Compile(ctx, protoFiles...)
 	if rep.Failed() {
-		return &CompileError{Message: "proto compilation failed"}
+		return &CompileError{Message: ErrCompilationFailed}
 	}
 	if err != nil {
 		return &CompileError{Message: err.Error()}
@@ -235,6 +231,11 @@ func ValidateProtos(
 
 	return nil
 }
+
+const (
+	// ErrCompilationFailed is the error message for proto compilation failures.
+	ErrCompilationFailed = "proto compilation failed"
+)
 
 // CompileError represents a compilation error.
 type CompileError struct {

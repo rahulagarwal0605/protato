@@ -21,6 +21,7 @@ import (
 const (
 	projectMetaFile = "protato.root.yaml"
 	protosDir       = "protos"
+	protoFileExt    = ".proto"
 )
 
 var (
@@ -260,9 +261,8 @@ func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesReque
 			continue
 		}
 
-		// Skip metadata files
-		name := path.Base(entry.Path)
-		if name == projectMetaFile || name == ".gitattributes" {
+		// Only include .proto files
+		if !strings.HasSuffix(entry.Path, protoFileExt) {
 			continue
 		}
 

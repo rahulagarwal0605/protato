@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rahulagarwal0605/protato/internal/git"
@@ -10,6 +11,13 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+)
+
+const (
+	// Error messages that indicate non-retryable errors
+	errValidationFailed = "validation failed"
+	errProjectClaim     = "project claim"
+	errOwnership        = "ownership"
 )
 
 // PushCmd publishes owned projects to registry.
@@ -99,6 +107,11 @@ func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext) error 
 			return nil
 		}
 
+		// Don't retry non-retryable errors (validation, ownership, etc.)
+		if !c.isRetryableError(err) {
+			return err
+		}
+
 		if attempt < c.Retries+1 {
 			logger.Log(ctx).Warn().Err(err).Msg("Push failed, retrying")
 			time.Sleep(c.RetryDelay * time.Duration(attempt))
@@ -109,6 +122,36 @@ func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext) error 
 	}
 
 	return fmt.Errorf("push failed after %d retries", c.Retries)
+}
+
+// isRetryableError determines if an error should be retried.
+// Returns false for validation errors, ownership errors, and other non-transient errors.
+// Returns true for push conflicts and network errors that might succeed on retry.
+func (c *PushCmd) isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Validation errors are not retryable
+	if strings.Contains(errStr, errValidationFailed) {
+		return false
+	}
+
+	// Compile errors are not retryable
+	if strings.Contains(errStr, protoc.ErrCompilationFailed) {
+		return false
+	}
+
+	// Ownership errors are not retryable
+	if strings.Contains(errStr, errProjectClaim) || strings.Contains(errStr, errOwnership) {
+		return false
+	}
+
+	// Push conflicts and network errors are retryable
+	// (These are typically the only errors that benefit from retry)
+	return true
 }
 
 // attemptPush performs a single push attempt.
@@ -225,7 +268,7 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 
 	logger.Log(ctx).Info().Msg("Validating proto files")
 	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return fmt.Errorf("%s: %w", errValidationFailed, err)
 	}
 
 	return nil
