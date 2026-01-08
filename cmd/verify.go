@@ -63,7 +63,10 @@ func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOpt
 		return nil, err
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo)
+	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	if err != nil {
+		return nil, err
+	}
 
 	var reg *registry.Cache
 	if globals.RegistryURL != "" {

@@ -268,12 +268,7 @@ func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *
 
 	logger.Log(ctx).Info().Strs("projects", literalPaths).Msg("Creating project directories")
 
-	projects := make([]local.ProjectPath, len(literalPaths))
-	for i, p := range literalPaths {
-		projects[i] = local.ProjectPath(p)
-	}
-
-	if err := ws.AddOwnedProjects(projects); err != nil {
+	if err := ws.AddOwnedProjects(literalPaths); err != nil {
 		return fmt.Errorf("add projects: %w", err)
 	}
 

@@ -517,15 +517,14 @@ func (ws *Workspace) ReceivedProjects(ctx context.Context) ([]*ReceivedProject, 
 }
 
 // AddOwnedProjects adds new owned projects to the configuration.
-func (ws *Workspace) AddOwnedProjects(projects []ProjectPath) error {
+func (ws *Workspace) AddOwnedProjects(projects []string) error {
 	// Add to existing projects
 	existing := make(map[string]bool)
 	for _, p := range ws.config.Projects {
 		existing[p] = true
 	}
 
-	for _, p := range projects {
-		ps := string(p)
+	for _, ps := range projects {
 		if !existing[ps] {
 			ws.config.Projects = append(ws.config.Projects, ps)
 			existing[ps] = true

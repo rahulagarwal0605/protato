@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/rahulagarwal0605/protato/internal/local"
-	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 // NewCmd creates a new project (claim ownership).
@@ -24,13 +23,20 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo)
+	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	if err != nil {
+		return err
+	}
 
 	if err := c.checkRegistryConflicts(ctx, globals, wctx, repoURL); err != nil {
 		return err
 	}
 
-	return c.addProjects(ctx, wctx.WS)
+	if err := wctx.WS.AddOwnedProjects(c.Paths); err != nil {
+		return fmt.Errorf("add projects: %w", err)
+	}
+
+	return nil
 }
 
 // validatePaths validates all project paths.
@@ -46,20 +52,22 @@ func (c *NewCmd) validatePaths() error {
 // checkRegistryConflicts verifies that the projects can be claimed.
 func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOptions, wctx *WorkspaceContext, repoURL string) error {
 	if globals.RegistryURL == "" {
-		return nil
+		return fmt.Errorf("registry URL not configured")
 	}
 
 	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Failed to open registry")
-		return nil
+		return fmt.Errorf("open registry: %w", err)
 	}
 
 	if err := reg.Refresh(ctx); err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
+		return fmt.Errorf("refresh registry: %w", err)
 	}
 
-	snapshot, _ := reg.Snapshot(ctx)
+	snapshot, err := reg.Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("get snapshot: %w", err)
+	}
 
 	for _, p := range c.Paths {
 		registryPath, err := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
@@ -69,20 +77,6 @@ func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOpti
 		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath)); err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-// addProjects adds the projects to the workspace.
-func (c *NewCmd) addProjects(ctx context.Context, ws *local.Workspace) error {
-	projects := make([]local.ProjectPath, len(c.Paths))
-	for i, p := range c.Paths {
-		projects[i] = local.ProjectPath(p)
-	}
-
-	if err := ws.AddOwnedProjects(projects); err != nil {
-		return fmt.Errorf("add projects: %w", err)
 	}
 
 	return nil

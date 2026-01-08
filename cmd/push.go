@@ -70,9 +70,9 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 		return nil, fmt.Errorf("get owned projects: %w", err)
 	}
 
-	repoURL := GetRepoURL(ctx, wctx.Repo)
-	if repoURL == "" {
-		return nil, fmt.Errorf("failed to get remote URL")
+	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	if err != nil {
+		return nil, err
 	}
 
 	currentCommit, err := wctx.Repo.RevHash(ctx, "HEAD")

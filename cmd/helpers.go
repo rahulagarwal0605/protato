@@ -81,13 +81,12 @@ func OpenAndRefreshRegistry(ctx context.Context, globals *GlobalOptions) (*regis
 }
 
 // GetRepoURL returns the normalized remote URL for the repository.
-func GetRepoURL(ctx context.Context, repo *git.Repository) string {
+func GetRepoURL(ctx context.Context, repo *git.Repository) (string, error) {
 	repoURL, err := repo.GetRemoteURL(ctx, "origin")
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Failed to get remote URL")
-		return ""
+		return "", fmt.Errorf("get remote URL: %w", err)
 	}
-	return git.NormalizeRemoteURL(repoURL)
+	return git.NormalizeRemoteURL(repoURL), nil
 }
 
 // CheckProjectClaim checks if a project can be claimed by the given repository.
