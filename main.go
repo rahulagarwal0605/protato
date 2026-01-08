@@ -60,6 +60,10 @@ func main() {
 
 	// Execute command - Kong injects globals and ctx
 	if err := kctx.Run(&cli.GlobalOptions, ctx); err != nil {
+		// If context was cancelled (e.g., Ctrl+C), exit cleanly without error message
+		if err == context.Canceled {
+			os.Exit(130) // Standard exit code for SIGINT (Ctrl+C)
+		}
 		kctx.FatalIfErrorf(err)
 	}
 }

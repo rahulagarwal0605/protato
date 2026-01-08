@@ -34,7 +34,10 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	}
 
 	// Gather configuration (interactive or from flags)
-	cfg := c.gatherConfig(repo.Root())
+	cfg, err := c.gatherConfig(ctx, repo.Root())
+	if err != nil {
+		return err
+	}
 
 	// Validate configuration consistency
 	if err := c.validateConfig(cfg); err != nil {
@@ -71,7 +74,7 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 }
 
 // gatherConfig collects configuration from flags or interactive prompts.
-func (c *InitCmd) gatherConfig(root string) *local.Config {
+func (c *InitCmd) gatherConfig(ctx context.Context, root string) (*local.Config, error) {
 	cfg := &local.Config{
 		Service: c.Service,
 		Directories: local.DirectoryConfig{
@@ -86,7 +89,9 @@ func (c *InitCmd) gatherConfig(root string) *local.Config {
 
 	// Use interactive mode if not skipped
 	if !c.SkipPrompts {
-		c.runInteractiveSetup(root, cfg)
+		if err := c.runInteractiveSetup(ctx, root, cfg); err != nil {
+			return nil, err
+		}
 	} else {
 		// Non-interactive: apply defaults for missing values
 		if cfg.Service == "" {
@@ -100,7 +105,7 @@ func (c *InitCmd) gatherConfig(root string) *local.Config {
 		}
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 // validateConfig validates the configuration for consistency.
@@ -115,15 +120,15 @@ func (c *InitCmd) validateConfig(cfg *local.Config) error {
 
 // runInteractiveSetup prompts the user for configuration.
 // It only prompts for fields that weren't provided via flags.
-func (c *InitCmd) runInteractiveSetup(root string, cfg *local.Config) {
+func (c *InitCmd) runInteractiveSetup(ctx context.Context, root string, cfg *local.Config) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println()
 	fmt.Println("🥔 Protato Setup")
 	fmt.Println()
 
-	// Define prompt handlers - all have consistent signature (root, reader, cfg)
-	prompts := []func(string, *bufio.Reader, *local.Config){
+	// Define prompt handlers - all have consistent signature (ctx, root, reader, cfg)
+	prompts := []func(context.Context, string, *bufio.Reader, *local.Config) error{
 		c.promptOrShowService,
 		c.promptOrShowOwnedDir,
 		c.promptOrShowVendorDir,
@@ -134,19 +139,29 @@ func (c *InitCmd) runInteractiveSetup(root string, cfg *local.Config) {
 
 	// Execute all prompts in order
 	for _, prompt := range prompts {
-		prompt(root, reader, cfg)
+		// Check if context is cancelled before each prompt
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := prompt(ctx, root, reader, cfg); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println()
+	return nil
 }
 
 // promptOrShowService prompts for service name or shows the flag value.
-func (c *InitCmd) promptOrShowService(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowService(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if c.Service == "" {
 		defaultService := filepath.Base(root)
 		fmt.Printf("Service name (used for registry namespace):\n  [default: %s]\n  > ", defaultService)
 
-		input := readLine(reader)
+		input, err := readLine(ctx, reader)
+		if err != nil {
+			return err
+		}
 		if input == "" {
 			cfg.Service = defaultService
 		} else {
@@ -155,15 +170,19 @@ func (c *InitCmd) promptOrShowService(root string, reader *bufio.Reader, cfg *lo
 	} else {
 		fmt.Printf("Service name: %s (from flag)\n", cfg.Service)
 	}
+	return nil
 }
 
 // promptOrShowOwnedDir prompts for owned directory or shows the flag value.
-func (c *InitCmd) promptOrShowOwnedDir(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowOwnedDir(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if c.OwnedDir == "" {
 		defaultDir := local.DefaultDirectoryConfig().Owned
 		fmt.Printf("\nDirectory for YOUR protos (protos you produce):\n  [default: %s]\n  > ", defaultDir)
 
-		input := readLine(reader)
+		input, err := readLine(ctx, reader)
+		if err != nil {
+			return err
+		}
 		if input != "" {
 			cfg.Directories.Owned = input
 		} else {
@@ -172,15 +191,19 @@ func (c *InitCmd) promptOrShowOwnedDir(root string, reader *bufio.Reader, cfg *l
 	} else {
 		fmt.Printf("Owned directory: %s (from flag)\n", cfg.Directories.Owned)
 	}
+	return nil
 }
 
 // promptOrShowVendorDir prompts for vendor directory or shows the flag value.
-func (c *InitCmd) promptOrShowVendorDir(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowVendorDir(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if c.VendorDir == "" {
 		defaultDir := local.DefaultDirectoryConfig().Vendor
 		fmt.Printf("\nDirectory for VENDOR protos (protos you consume):\n  [default: %s]\n  > ", defaultDir)
 
-		input := readLine(reader)
+		input, err := readLine(ctx, reader)
+		if err != nil {
+			return err
+		}
 		if input != "" {
 			cfg.Directories.Vendor = input
 		} else {
@@ -189,29 +212,37 @@ func (c *InitCmd) promptOrShowVendorDir(root string, reader *bufio.Reader, cfg *
 	} else {
 		fmt.Printf("Vendor directory: %s (from flag)\n", cfg.Directories.Vendor)
 	}
+	return nil
 }
 
 // promptOrShowAutoDiscover prompts for auto-discover or shows the flag value.
-func (c *InitCmd) promptOrShowAutoDiscover(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowAutoDiscover(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if !c.NoAutoDiscover {
 		fmt.Printf("\nAuto-discover projects? (scans for all .proto files automatically)\n  [Y/n]: ")
 
-		input := strings.ToLower(readLine(reader))
-		cfg.AutoDiscover = input != "n" && input != "no"
+		input, err := readLine(ctx, reader)
+		if err != nil {
+			return err
+		}
+		cfg.AutoDiscover = strings.ToLower(input) != "n" && strings.ToLower(input) != "no"
 	} else {
 		fmt.Printf("Auto-discover: %v (from flags)\n", cfg.AutoDiscover)
 	}
+	return nil
 }
 
 // promptOrShowProjects prompts for projects or shows the flag value.
 // Only prompts when auto_discover=false, as projects are used to find projects matching patterns.
-func (c *InitCmd) promptOrShowProjects(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowProjects(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if len(c.Projects) == 0 {
 		// Only prompt for projects when auto-discover is disabled
 		if !cfg.AutoDiscover {
 			fmt.Printf("\nProject patterns (glob, e.g., 'payments/**', 'orders/v*'):\n  [required when auto-discover is disabled]\n  > ")
 
-			input := readLine(reader)
+			input, err := readLine(ctx, reader)
+			if err != nil {
+				return err
+			}
 			if input != "" {
 				projects := ParseCommaSeparated(input)
 				cfg.Projects = append(cfg.Projects, projects...)
@@ -220,15 +251,19 @@ func (c *InitCmd) promptOrShowProjects(root string, reader *bufio.Reader, cfg *l
 	} else {
 		fmt.Printf("Projects: %v (from flags)\n", cfg.Projects)
 	}
+	return nil
 }
 
 // promptOrShowIgnores prompts for ignores or shows the flag value.
 // Ignores can be used in both auto_discover=true (filter discovered projects) and auto_discover=false (filter files within projects).
-func (c *InitCmd) promptOrShowIgnores(root string, reader *bufio.Reader, cfg *local.Config) {
+func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if len(c.Ignores) == 0 {
 		fmt.Printf("\nIgnore patterns (glob, e.g., '**/test/**', 'deprecated/*'):\n  [optional, press Enter to skip]\n  > ")
 
-		input := readLine(reader)
+		input, err := readLine(ctx, reader)
+		if err != nil {
+			return err
+		}
 		if input != "" {
 			ignores := ParseCommaSeparated(input)
 			cfg.Ignores = append(cfg.Ignores, ignores...)
@@ -236,12 +271,33 @@ func (c *InitCmd) promptOrShowIgnores(root string, reader *bufio.Reader, cfg *lo
 	} else {
 		fmt.Printf("Ignores: %v (from flags)\n", cfg.Ignores)
 	}
+	return nil
 }
 
 // readLine reads a line from the reader and trims whitespace.
-func readLine(reader *bufio.Reader) string {
-	input, _ := reader.ReadString('\n')
-	return strings.TrimSpace(input)
+// Returns an error if the context is cancelled (e.g., Ctrl+C).
+func readLine(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	resultChan := make(chan result, 1)
+
+	go func() {
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			resultChan <- result{"", err}
+			return
+		}
+		resultChan <- result{strings.TrimSpace(input), nil}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-resultChan:
+		return res.line, res.err
+	}
 }
 
 // initWorkspace creates the protato workspace.
