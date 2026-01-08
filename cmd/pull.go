@@ -27,7 +27,7 @@ type pullPlan struct {
 
 // Run executes the pull command.
 func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{CreateIfMissing: true})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func (c *PullCmd) getInitialProjects(ctx context.Context, ws *local.Workspace) [
 		return projects
 	}
 
-	received, err := ws.ReceivedProjects()
+	received, err := ws.ReceivedProjects(ctx)
 	if err != nil {
 		logger.Log(ctx).Warn().Err(err).Msg("Failed to get received projects")
 		return nil
@@ -235,10 +235,13 @@ func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, r
 		Int("files", len(plan.files)).
 		Msg("Pulling project")
 
-	recv := ws.ReceiveProject(&local.ReceiveProjectRequest{
+	recv, err := ws.ReceiveProject(&local.ReceiveProjectRequest{
 		Project:  local.ProjectPath(plan.project),
 		Snapshot: snapshot,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("receive project: %w", err)
+	}
 
 	if err := c.pullFiles(ctx, reg, recv, plan.files); err != nil {
 		return nil, err

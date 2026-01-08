@@ -21,7 +21,6 @@ import (
 type RegistryResolver struct {
 	cache    *registry.Cache
 	snapshot git.Hash
-	ctx      context.Context // Context for dependency injection (logger)
 
 	mu       sync.Mutex
 	projects map[registry.ProjectPath]struct{} // Discovered projects
@@ -32,7 +31,6 @@ func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot gi
 	return &RegistryResolver{
 		cache:    cache,
 		snapshot: snapshot,
-		ctx:      ctx,
 		projects: make(map[registry.ProjectPath]struct{}),
 	}
 }
@@ -41,7 +39,7 @@ func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot gi
 func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchResult, error) {
 	ctx := context.Background()
 
-	logger.Log(r.ctx).Debug().Str("path", filePath).Msg("Resolving import")
+	logger.Log(ctx).Debug().Str("path", filePath).Msg("Resolving import")
 
 	// Look up project for this path
 	res, err := r.cache.LookupProject(ctx, &registry.LookupProjectRequest{

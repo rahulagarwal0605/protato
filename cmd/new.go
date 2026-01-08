@@ -19,7 +19,7 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return err
 	}

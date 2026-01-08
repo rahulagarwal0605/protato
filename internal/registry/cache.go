@@ -44,9 +44,8 @@ type gitRepository interface {
 
 // Cache manages the local cache of the remote registry.
 type Cache struct {
-	root      string          // Cache directory path
-	ctx       context.Context // Context for dependency injection (logger)
-	repo      gitRepository   // Bare Git repository
+	root      string        // Cache directory path
+	repo      gitRepository // Bare Git repository
 	committer RegistryCommitter
 	url       string // Registry URL
 }
@@ -82,7 +81,6 @@ func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, err
 
 	cache := &Cache{
 		root: cacheRoot,
-		ctx:  ctx,
 		repo: repo,
 		url:  registryURL,
 		committer: RegistryCommitter{
@@ -96,7 +94,7 @@ func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, err
 
 // Refresh refreshes the cache from remote.
 func (r *Cache) Refresh(ctx context.Context) error {
-	logger.Log(r.ctx).Debug().Msg("Refreshing registry cache")
+	logger.Log(ctx).Debug().Msg("Refreshing registry cache")
 	return r.repo.Fetch(ctx, git.FetchOptions{
 		Remote: "origin",
 		Depth:  1,

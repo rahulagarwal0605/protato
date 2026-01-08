@@ -18,34 +18,29 @@ type WorkspaceContext struct {
 	WS   *local.Workspace
 }
 
-// FindRepoRoot finds the Git repository root directory from the current working directory.
-func FindRepoRoot(ctx context.Context) (string, error) {
+// GetCurrentRepo opens the Git repository from the current working directory.
+func GetCurrentRepo(ctx context.Context) (*git.Repository, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("get cwd: %w", err)
+		return nil, fmt.Errorf("get cwd: %w", err)
 	}
 
-	repo, err := git.Open(ctx, cwd, git.OpenOptions{})
-	if err != nil {
-		return "", fmt.Errorf("open git repo: %w", err)
-	}
-
-	return repo.Root(), nil
-}
-
-// OpenWorkspace opens the Git repository and workspace from the current directory.
-func OpenWorkspace(ctx context.Context, opts local.OpenOptions) (*WorkspaceContext, error) {
-	root, err := FindRepoRoot(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	repo, err := git.Open(ctx, root, git.OpenOptions{})
+	repo, err := git.Open(ctx, cwd, git.OpenOptions{Bare: false})
 	if err != nil {
 		return nil, fmt.Errorf("open git repo: %w", err)
 	}
 
-	ws, err := local.Open(ctx, root, opts)
+	return repo, nil
+}
+
+// OpenWorkspace opens the Git repository and workspace from the current directory.
+func OpenWorkspace(ctx context.Context) (*WorkspaceContext, error) {
+	repo, err := GetCurrentRepo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ws, err := local.Open(ctx, repo.Root())
 	if err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}

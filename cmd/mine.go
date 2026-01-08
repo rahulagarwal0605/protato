@@ -18,7 +18,7 @@ type MineCmd struct {
 
 // Run executes the mine command.
 func (c *MineCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return err
 	}

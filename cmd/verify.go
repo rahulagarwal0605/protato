@@ -58,7 +58,7 @@ func (c *VerifyCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // prepareVerifyContext initializes verification resources.
 func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOptions) (*verifyContext, error) {
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext
 func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContext) error {
 	logger.Log(ctx).Info().Msg("Checking pulled project integrity")
 
-	receivedProjects, err := vctx.wctx.WS.ReceivedProjects()
+	receivedProjects, err := vctx.wctx.WS.ReceivedProjects(ctx)
 	if err != nil {
 		logger.Log(ctx).Warn().Err(err).Msg("Failed to get received projects")
 		return nil
@@ -261,7 +261,7 @@ func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, pr
 func (c *VerifyCmd) verifyOrphanedFiles(ctx context.Context, ws *local.Workspace) error {
 	logger.Log(ctx).Info().Msg("Checking for orphaned files")
 
-	orphaned, err := ws.OrphanedFiles()
+	orphaned, err := ws.OrphanedFiles(ctx)
 	if err != nil {
 		logger.Log(ctx).Warn().Err(err).Msg("Failed to check for orphaned files")
 		return nil

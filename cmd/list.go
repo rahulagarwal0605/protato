@@ -26,7 +26,7 @@ func (c *ListCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // listLocal lists projects in the local workspace.
 func (c *ListCmd) listLocal(ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return err
 	}
@@ -36,7 +36,7 @@ func (c *ListCmd) listLocal(ctx context.Context) error {
 		return fmt.Errorf("get owned projects: %w", err)
 	}
 
-	received, err := wctx.WS.ReceivedProjects()
+	received, err := wctx.WS.ReceivedProjects(ctx)
 	if err != nil {
 		return fmt.Errorf("get received projects: %w", err)
 	}

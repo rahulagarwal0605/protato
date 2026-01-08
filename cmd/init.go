@@ -27,23 +27,23 @@ type InitCmd struct {
 
 // Run executes the init command.
 func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	// Find Git repository root
-	root, err := FindRepoRoot(ctx)
+	// Get current Git repository
+	repo, err := GetCurrentRepo(ctx)
 	if err != nil {
 		return err
 	}
 
 	// Gather configuration (interactive or from flags)
-	cfg := c.gatherConfig(root)
+	cfg := c.gatherConfig(repo.Root())
 
 	logger.Log(ctx).Info().
-		Str("root", root).
+		Str("root", repo.Root()).
 		Str("service", cfg.Service).
 		Bool("auto_discover", cfg.AutoDiscover).
 		Msg("Initializing protato workspace")
 
 	// Initialize workspace
-	ws, err := c.initWorkspace(ctx, root, cfg)
+	ws, err := c.initWorkspace(ctx, repo.Root(), cfg)
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,9 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	c.initRegistryCache(ctx, globals)
 
 	// Print completion messages and next steps
-	c.printCompletion(ws, cfg)
+	if err := c.printCompletion(ws, cfg); err != nil {
+		return err
+	}
 
 	logger.Log(ctx).Info().Msg("Workspace initialized successfully")
 	return nil
@@ -276,20 +278,29 @@ func (c *InitCmd) initRegistryCache(ctx context.Context, globals *GlobalOptions)
 }
 
 // printCompletion prints success messages and next steps after initialization.
-func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) {
+func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) error {
+	ownedDir, err := ws.OwnedDir()
+	if err != nil {
+		return fmt.Errorf("get owned directory: %w", err)
+	}
+	vendorDir, err := ws.VendorDir()
+	if err != nil {
+		return fmt.Errorf("get vendor directory: %w", err)
+	}
+
 	fmt.Printf("✅ Created protato.yaml\n")
-	fmt.Printf("✅ Created %s/ directory (for your protos)\n", ws.OwnedDir())
-	fmt.Printf("✅ Created %s/ directory (for vendor protos)\n", ws.VendorDir())
+	fmt.Printf("✅ Created %s/ directory (for your protos)\n", ownedDir)
+	fmt.Printf("✅ Created %s/ directory (for vendor protos)\n", vendorDir)
 
 	if cfg.AutoDiscover {
-		fmt.Printf("✅ Auto-discovery enabled (all protos in %s/ will be discovered)\n", ws.OwnedDir())
+		fmt.Printf("✅ Auto-discovery enabled (all protos in %s/ will be discovered)\n", ownedDir)
 	}
 
 	fmt.Println()
 	fmt.Println("Next steps:")
 
 	if cfg.AutoDiscover {
-		fmt.Printf("  1. Add your .proto files to %s/<project>/\n", ws.OwnedDir())
+		fmt.Printf("  1. Add your .proto files to %s/<project>/\n", ownedDir)
 	} else {
 		fmt.Printf("  1. Add your proto projects: protato new <project-path>\n")
 	}
@@ -297,4 +308,6 @@ func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) {
 	fmt.Printf("  2. Push to registry: protato push\n")
 	fmt.Printf("  3. Pull dependencies: protato pull <project-path>\n")
 	fmt.Println()
+
+	return nil
 }

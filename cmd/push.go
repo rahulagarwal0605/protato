@@ -46,7 +46,7 @@ func (c *PushCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // preparePushContext initializes all resources needed for push.
 func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions) (*pushContext, error) {
-	wctx, err := OpenWorkspace(ctx, local.OpenOptions{})
+	wctx, err := OpenWorkspace(ctx)
 	if err != nil {
 		return nil, err
 	}

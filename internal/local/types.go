@@ -2,6 +2,8 @@
 package local
 
 import (
+	"errors"
+
 	"github.com/rahulagarwal0605/protato/internal/git"
 )
 
@@ -36,20 +38,27 @@ func DefaultDirectoryConfig() DirectoryConfig {
 	}
 }
 
-// OwnedDir returns the owned directory, defaulting to "proto".
-func (c *Config) OwnedDir() string {
+var (
+	// ErrOwnedDirNotSet is returned when OwnedDir is called but not configured.
+	ErrOwnedDirNotSet = errors.New("owned directory not configured")
+	// ErrVendorDirNotSet is returned when VendorDir is called but not configured.
+	ErrVendorDirNotSet = errors.New("vendor directory not configured")
+)
+
+// OwnedDir returns the owned directory.
+func (c *Config) OwnedDir() (string, error) {
 	if c.Directories.Owned == "" {
-		return "proto"
+		return "", ErrOwnedDirNotSet
 	}
-	return c.Directories.Owned
+	return c.Directories.Owned, nil
 }
 
-// VendorDir returns the vendor directory, defaulting to "vendor-proto".
-func (c *Config) VendorDir() string {
+// VendorDir returns the vendor directory.
+func (c *Config) VendorDir() (string, error) {
 	if c.Directories.Vendor == "" {
-		return "vendor-proto"
+		return "", ErrVendorDirNotSet
 	}
-	return c.Directories.Vendor
+	return c.Directories.Vendor, nil
 }
 
 // LockFile represents the protato.lock file.
@@ -67,12 +76,6 @@ type ProjectFile struct {
 type ReceivedProject struct {
 	Project          ProjectPath
 	ProviderSnapshot string // Registry Git commit hash
-}
-
-// OpenOptions contains options for opening a workspace.
-type OpenOptions struct {
-	// CreateIfMissing creates the config if it doesn't exist
-	CreateIfMissing bool
 }
 
 // ReceiveProjectRequest contains parameters for receiving a project.
