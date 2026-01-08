@@ -46,7 +46,13 @@ func (c *PushCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // preparePushContext initializes all resources needed for push.
 func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions) (*pushContext, error) {
-	wctx, err := OpenWorkspace(ctx)
+	// Check registry URL first
+	reg, err := OpenRegistry(ctx, globals)
+	if err != nil {
+		return nil, err
+	}
+
+	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -56,30 +62,22 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 		return nil, fmt.Errorf("get owned projects: %w", err)
 	}
 
-	currentCommit, err := wctx.Repo.RevHash(ctx, "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("get HEAD: %w", err)
-	}
-
 	repoURL := GetRepoURL(ctx, wctx.Repo)
 	if repoURL == "" {
 		return nil, fmt.Errorf("failed to get remote URL")
 	}
 
-	reg, err := OpenRegistry(ctx, globals)
+	currentCommit, err := wctx.Repo.RevHash(ctx, "HEAD")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get HEAD: %w", err)
 	}
 
-	// Get current Git user (works for both GitHub Actions and local)
-	var author *git.Author
+	// Get current Git user (required for push)
 	user, err := wctx.Repo.GetUser(ctx)
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Failed to get Git user, will use registry committer")
-		// Continue without author - will use registry committer as fallback
-	} else {
-		author = &user
+		return nil, fmt.Errorf("get Git user: %w", err)
 	}
+	author := &user
 
 	return &pushContext{
 		wctx:          wctx,
@@ -147,7 +145,10 @@ func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext) error {
 // checkOwnershipClaims verifies all projects can be pushed.
 func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, snapshot git.Hash) error {
 	for _, project := range pctx.ownedProjects {
-		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
+		registryPath, err := pctx.wctx.WS.RegistryProjectPath(project)
+		if err != nil {
+			return fmt.Errorf("get registry path for %s: %w", project, err)
+		}
 		if err := CheckProjectClaim(ctx, pctx.reg, snapshot, pctx.repoURL, string(registryPath)); err != nil {
 			return err
 		}
@@ -161,7 +162,10 @@ func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapsho
 	var registryProjects []registry.ProjectPath
 
 	for _, project := range pctx.ownedProjects {
-		registryPath := pctx.wctx.WS.RegistryProjectPath(project)
+		registryPath, err := pctx.wctx.WS.RegistryProjectPath(project)
+		if err != nil {
+			return "", nil, fmt.Errorf("get registry path for %s: %w", project, err)
+		}
 		registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
 
 		logger.Log(ctx).Info().

@@ -44,10 +44,9 @@ type gitRepository interface {
 
 // Cache manages the local cache of the remote registry.
 type Cache struct {
-	root      string        // Cache directory path
-	repo      gitRepository // Bare Git repository
-	committer RegistryCommitter
-	url       string // Registry URL
+	root string        // Cache directory path
+	repo gitRepository // Bare Git repository
+	url  string        // Registry URL
 }
 
 // Open opens or initializes the registry cache.
@@ -83,10 +82,6 @@ func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, err
 		root: cacheRoot,
 		repo: repo,
 		url:  registryURL,
-		committer: RegistryCommitter{
-			Name:  "Protato Bot",
-			Email: "protato@example.com",
-		},
 	}
 
 	return cache, nil
@@ -95,10 +90,14 @@ func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, err
 // Refresh refreshes the cache from remote.
 func (r *Cache) Refresh(ctx context.Context) error {
 	logger.Log(ctx).Debug().Msg("Refreshing registry cache")
+	branch := r.getDefaultBranch(ctx)
 	return r.repo.Fetch(ctx, git.FetchOptions{
 		Remote: "origin",
-		Depth:  1,
-		Prune:  true,
+		RefSpecs: []git.Refspec{
+			git.Refspec(fmt.Sprintf("refs/heads/%s:refs/remotes/origin/%s", branch, branch)),
+		},
+		Depth: 1,
+		Prune: true,
 	})
 }
 
@@ -116,13 +115,9 @@ func (r *Cache) Snapshot(ctx context.Context) (git.Hash, error) {
 
 // LookupProject finds a project by path.
 func (r *Cache) LookupProject(ctx context.Context, req *LookupProjectRequest) (*LookupProjectResponse, error) {
-	snapshot := req.Snapshot
-	if snapshot == "" {
-		var err error
-		snapshot, err = r.Snapshot(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get snapshot: %w", err)
-		}
+	snapshot, err := r.getOrCreateSnapshot(ctx, req.Snapshot)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify snapshot exists
@@ -197,18 +192,21 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 	if opts != nil {
 		snapshot = opts.Snapshot
 	}
-	if snapshot == "" {
-		var err error
-		snapshot, err = r.Snapshot(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get snapshot: %w", err)
-		}
+	snapshot, err := r.getOrCreateSnapshot(ctx, snapshot)
+	if err != nil {
+		return nil, err
 	}
 
-	// List all files in protos/
+	// Determine search path: use prefix if provided, otherwise scan entire protos/
+	searchPath := protosDir
+	if opts != nil && opts.Prefix != "" {
+		searchPath = path.Join(protosDir, opts.Prefix)
+	}
+
+	// List all files in search path
 	entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
 		Recurse: true,
-		Paths:   []string{protosDir},
+		Paths:   []string{searchPath},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read tree: %w", err)
@@ -228,13 +226,6 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 		dir := path.Dir(entry.Path)
 		projectPath := strings.TrimPrefix(dir, protosDir+"/")
 
-		// Apply prefix filter
-		if opts != nil && opts.Prefix != "" {
-			if !strings.HasPrefix(projectPath, opts.Prefix) {
-				continue
-			}
-		}
-
 		projectSet[projectPath] = true
 	}
 
@@ -249,13 +240,9 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 
 // ListProjectFiles lists all files in a project.
 func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesRequest) (*ListProjectFilesResponse, error) {
-	snapshot := req.Snapshot
-	if snapshot == "" {
-		var err error
-		snapshot, err = r.Snapshot(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get snapshot: %w", err)
-		}
+	snapshot, err := r.getOrCreateSnapshot(ctx, req.Snapshot)
+	if err != nil {
+		return nil, err
 	}
 
 	projectPath := path.Join(protosDir, string(req.Project))
@@ -303,27 +290,65 @@ func (r *Cache) ReadProjectFile(ctx context.Context, file ProjectFile, writer io
 
 // SetProject updates a project in the registry.
 func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetProjectResponse, error) {
-	snapshot := req.Snapshot
-	if snapshot == "" {
-		var err error
-		snapshot, err = r.Snapshot(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get snapshot: %w", err)
-		}
+	snapshot, err := r.getOrCreateSnapshot(ctx, req.Snapshot)
+	if err != nil {
+		return nil, err
 	}
 
-	// Get current tree
 	currentTree, err := r.repo.RevHash(ctx, string(snapshot)+"^{tree}")
 	if err != nil {
 		return nil, fmt.Errorf("get current tree: %w", err)
 	}
 
-	// Prepare upserts
-	var upserts []git.TreeUpsert
 	projectPrefix := path.Join(protosDir, string(req.Project.Path))
+	upserts, err := r.prepareUpserts(ctx, req.Project, req.Files, projectPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	deletes, err := r.prepareDeletes(ctx, req.Project.Path, req.Files, snapshot, projectPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	newTree, err := r.repo.UpdateTree(ctx, git.UpdateTreeRequest{
+		Tree:    currentTree,
+		Upserts: upserts,
+		Deletes: deletes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update tree: %w", err)
+	}
+
+	newCommit, err := r.createProjectCommit(ctx, req, snapshot, newTree)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SetProjectResponse{
+		Snapshot:     newCommit,
+		FilesChanged: len(req.Files),
+	}, nil
+}
+
+// getOrCreateSnapshot gets the snapshot from request or creates a new one.
+func (r *Cache) getOrCreateSnapshot(ctx context.Context, snapshot git.Hash) (git.Hash, error) {
+	if snapshot != "" {
+		return snapshot, nil
+	}
+	snapshot, err := r.Snapshot(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+// prepareUpserts prepares tree upserts for project metadata and files.
+func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []LocalProjectFile, projectPrefix string) ([]git.TreeUpsert, error) {
+	var upserts []git.TreeUpsert
 
 	// Write project metadata
-	metaContent := fmt.Sprintf("git:\n  commit: %s\n  url: %s\n", req.Project.Commit, req.Project.RepositoryURL)
+	metaContent := fmt.Sprintf("git:\n  commit: %s\n  url: %s\n", project.Commit, project.RepositoryURL)
 	metaHash, err := r.repo.WriteObject(ctx, strings.NewReader(metaContent), git.WriteObjectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("write project meta: %w", err)
@@ -334,13 +359,8 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 		Mode: 0100644,
 	})
 
-	// Write files (only .proto files)
-	for _, file := range req.Files {
-		// Only allow .proto files to be committed
-		if !strings.HasSuffix(file.Path, ".proto") {
-			continue
-		}
-
+	// Write files
+	for _, file := range files {
 		f, err := os.Open(file.LocalPath)
 		if err != nil {
 			return nil, fmt.Errorf("open file %s: %w", file.LocalPath, err)
@@ -359,62 +379,51 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 		})
 	}
 
-	// Get list of files to delete (files in registry not in request)
+	return upserts, nil
+}
+
+// prepareDeletes prepares which files should be deleted from the registry.
+func (r *Cache) prepareDeletes(ctx context.Context, projectPath ProjectPath, newFiles []LocalProjectFile, snapshot git.Hash, projectPrefix string) ([]string, error) {
 	existingFiles, _ := r.ListProjectFiles(ctx, &ListProjectFilesRequest{
-		Project:  req.Project.Path,
+		Project:  projectPath,
 		Snapshot: snapshot,
 	})
 
-	newFiles := make(map[string]bool)
-	for _, f := range req.Files {
-		newFiles[f.Path] = true
+	newFilesMap := make(map[string]bool)
+	for _, f := range newFiles {
+		newFilesMap[f.Path] = true
 	}
 
 	var deletes []string
 	if existingFiles != nil {
 		for _, f := range existingFiles.Files {
-			if !newFiles[f.Path] {
+			if !newFilesMap[f.Path] {
 				deletes = append(deletes, path.Join(projectPrefix, f.Path))
 			}
 		}
 	}
 
-	// Update tree
-	newTree, err := r.repo.UpdateTree(ctx, git.UpdateTreeRequest{
-		Tree:    currentTree,
-		Upserts: upserts,
-		Deletes: deletes,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("update tree: %w", err)
+	return deletes, nil
+}
+
+// createProjectCommit creates a commit for the project update.
+func (r *Cache) createProjectCommit(ctx context.Context, req *SetProjectRequest, snapshot git.Hash, tree git.Hash) (git.Hash, error) {
+	if req.Author == nil {
+		return "", fmt.Errorf("author is required")
 	}
 
-	// Create commit
 	message := fmt.Sprintf("%s: %d files", req.Project.Path, len(req.Files))
-
-	// Use provided author or fall back to registry committer
-	author := git.Author{
-		Name:  r.committer.Name,
-		Email: r.committer.Email,
-	}
-	if req.Author != nil {
-		author = *req.Author
-	}
-
 	newCommit, err := r.repo.CommitTree(ctx, git.CommitTreeRequest{
-		Tree:    newTree,
+		Tree:    tree,
 		Parents: []git.Hash{snapshot},
 		Message: message,
-		Author:  author,
+		Author:  *req.Author,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create commit: %w", err)
+		return "", fmt.Errorf("create commit: %w", err)
 	}
 
-	return &SetProjectResponse{
-		Snapshot:     newCommit,
-		FilesChanged: len(req.Files),
-	}, nil
+	return newCommit, nil
 }
 
 // Push pushes a commit to the remote registry.
@@ -432,10 +441,16 @@ func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
 
 // getDefaultBranch returns the default branch name (main, master, etc.)
 func (r *Cache) getDefaultBranch(ctx context.Context) string {
-	// Try to get the branch from HEAD reference
+	// Try to get the branch from HEAD reference (for bare repos, HEAD points to refs/heads/branch)
 	if headRef, err := r.repo.RevHash(ctx, "HEAD"); err == nil {
-		// Check common branch names
+		// Check common branch names - try local refs first (for bare repos after clone)
 		for _, branch := range []string{"main", "master"} {
+			if branchHash, err := r.repo.RevHash(ctx, "refs/heads/"+branch); err == nil {
+				if headRef == branchHash {
+					return branch
+				}
+			}
+			// Also check remote refs (after fetch)
 			if branchHash, err := r.repo.RevHash(ctx, "refs/remotes/origin/"+branch); err == nil {
 				if headRef == branchHash {
 					return branch
@@ -444,8 +459,8 @@ func (r *Cache) getDefaultBranch(ctx context.Context) string {
 		}
 	}
 
-	// Default to master if we can't detect
-	return "master"
+	// Default to main (more common now) if we can't detect
+	return "main"
 }
 
 // URL returns the registry URL.

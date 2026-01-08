@@ -33,8 +33,8 @@ func GetCurrentRepo(ctx context.Context) (*git.Repository, error) {
 	return repo, nil
 }
 
-// OpenWorkspace opens the Git repository and workspace from the current directory.
-func OpenWorkspace(ctx context.Context) (*WorkspaceContext, error) {
+// OpenWorkspaceContext opens the Git repository and workspace from the current directory.
+func OpenWorkspaceContext(ctx context.Context) (*WorkspaceContext, error) {
 	repo, err := GetCurrentRepo(ctx)
 	if err != nil {
 		return nil, err

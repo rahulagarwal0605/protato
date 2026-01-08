@@ -37,7 +37,7 @@ func Clone(ctx context.Context, url, path string, opts CloneOptions) (*Repositor
 	}
 	args = append(args, url, path)
 
-	cmd := newGitCmd(ctx, args...)
+	cmd := newGitCmd(args...)
 	if err := cmd.Run(ctx, GetExecer(ctx)); err != nil {
 		return nil, fmt.Errorf("clone: %w", err)
 	}
@@ -96,8 +96,8 @@ func (r *Repository) IsBare() bool {
 }
 
 // gitCmd creates a new Git command.
-func (r *Repository) gitCmd(ctx context.Context, args ...string) *gitCmd {
-	cmd := newGitCmd(ctx, args...)
+func (r *Repository) gitCmd(args ...string) *gitCmd {
+	cmd := newGitCmd(args...)
 	if r.bare {
 		cmd.env = append(cmd.env, "GIT_DIR="+r.gitDir)
 	} else {
@@ -122,7 +122,7 @@ func (r *Repository) Fetch(ctx context.Context, opts FetchOptions) error {
 		args = append(args, string(refspec))
 	}
 
-	return r.gitCmd(ctx, args...).Run(ctx, r.exec)
+	return r.gitCmd(args...).Run(ctx, r.exec)
 }
 
 // Push pushes to a remote.
@@ -141,12 +141,12 @@ func (r *Repository) Push(ctx context.Context, opts PushOptions) error {
 		args = append(args, string(refspec))
 	}
 
-	return r.gitCmd(ctx, args...).Run(ctx, r.exec)
+	return r.gitCmd(args...).Run(ctx, r.exec)
 }
 
 // RevHash resolves a revision to a hash.
 func (r *Repository) RevHash(ctx context.Context, rev string) (Hash, error) {
-	out, err := r.gitCmd(ctx, "rev-parse", rev).Output(ctx, r.exec)
+	out, err := r.gitCmd("rev-parse", rev).Output(ctx, r.exec)
 	if err != nil {
 		return "", fmt.Errorf("rev-parse %s: %w", rev, err)
 	}
@@ -155,7 +155,7 @@ func (r *Repository) RevHash(ctx context.Context, rev string) (Hash, error) {
 
 // RevExists checks if a revision exists.
 func (r *Repository) RevExists(ctx context.Context, rev string) bool {
-	err := r.gitCmd(ctx, "rev-parse", "--verify", rev+"^{commit}").Run(ctx, r.exec)
+	err := r.gitCmd("rev-parse", "--verify", rev+"^{commit}").Run(ctx, r.exec)
 	return err == nil
 }
 
@@ -171,7 +171,7 @@ func (r *Repository) ReadTree(ctx context.Context, treeish Treeish, opts ReadTre
 		args = append(args, opts.Paths...)
 	}
 
-	out, err := r.gitCmd(ctx, args...).Output(ctx, r.exec)
+	out, err := r.gitCmd(args...).Output(ctx, r.exec)
 	if err != nil {
 		return nil, fmt.Errorf("ls-tree: %w", err)
 	}
@@ -231,7 +231,7 @@ func (r *Repository) WriteObject(ctx context.Context, body io.Reader, opts Write
 		args = append(args, "--path="+opts.Path)
 	}
 
-	cmd := r.gitCmd(ctx, args...)
+	cmd := r.gitCmd(args...)
 	out, err := cmd.OutputWithStdin(ctx, r.exec, body)
 	if err != nil {
 		return "", fmt.Errorf("hash-object: %w", err)
@@ -242,7 +242,7 @@ func (r *Repository) WriteObject(ctx context.Context, body io.Reader, opts Write
 
 // ReadObject reads an object from the store.
 func (r *Repository) ReadObject(ctx context.Context, objType ObjectType, hash Hash, writer io.Writer) error {
-	cmd := r.gitCmd(ctx, "cat-file", objType.String(), hash.String())
+	cmd := r.gitCmd("cat-file", objType.String(), hash.String())
 	return cmd.RunWithStdout(ctx, r.exec, writer)
 }
 
@@ -261,7 +261,7 @@ func (r *Repository) UpdateTree(ctx context.Context, req UpdateTreeRequest) (Has
 
 	// Read current tree into index
 	if req.Tree != "" {
-		cmd := r.gitCmd(ctx, "read-tree", req.Tree.String())
+		cmd := r.gitCmd("read-tree", req.Tree.String())
 		cmd.env = append(cmd.env, env...)
 		if err := cmd.Run(ctx, r.exec); err != nil {
 			return "", fmt.Errorf("read-tree: %w", err)
@@ -270,8 +270,7 @@ func (r *Repository) UpdateTree(ctx context.Context, req UpdateTreeRequest) (Has
 
 	// Apply upserts
 	for _, upsert := range req.Upserts {
-		cmd := r.gitCmd(ctx, "update-index", "--add", "--cacheinfo",
-			fmt.Sprintf("%o,%s,%s", upsert.Mode, upsert.Blob, upsert.Path))
+		cmd := r.gitCmd("update-index", "--add", "--cacheinfo", fmt.Sprintf("%o,%s,%s", upsert.Mode, upsert.Blob, upsert.Path))
 		cmd.env = append(cmd.env, env...)
 		if err := cmd.Run(ctx, r.exec); err != nil {
 			return "", fmt.Errorf("update-index add: %w", err)
@@ -280,7 +279,7 @@ func (r *Repository) UpdateTree(ctx context.Context, req UpdateTreeRequest) (Has
 
 	// Apply deletes
 	for _, del := range req.Deletes {
-		cmd := r.gitCmd(ctx, "update-index", "--remove", del)
+		cmd := r.gitCmd("update-index", "--remove", del)
 		cmd.env = append(cmd.env, env...)
 		if err := cmd.Run(ctx, r.exec); err != nil {
 			return "", fmt.Errorf("update-index remove: %w", err)
@@ -288,7 +287,7 @@ func (r *Repository) UpdateTree(ctx context.Context, req UpdateTreeRequest) (Has
 	}
 
 	// Write tree
-	cmd := r.gitCmd(ctx, "write-tree")
+	cmd := r.gitCmd("write-tree")
 	cmd.env = append(cmd.env, env...)
 	out, err := cmd.Output(ctx, r.exec)
 	if err != nil {
@@ -308,7 +307,7 @@ func (r *Repository) CommitTree(ctx context.Context, req CommitTreeRequest) (Has
 
 	args = append(args, "-m", req.Message)
 
-	cmd := r.gitCmd(ctx, args...)
+	cmd := r.gitCmd(args...)
 	cmd.env = append(cmd.env,
 		"GIT_AUTHOR_NAME="+req.Author.Name,
 		"GIT_AUTHOR_EMAIL="+req.Author.Email,
@@ -330,12 +329,12 @@ func (r *Repository) UpdateRef(ctx context.Context, ref string, hash Hash, oldHa
 	if oldHash != "" {
 		args = append(args, oldHash.String())
 	}
-	return r.gitCmd(ctx, args...).Run(ctx, r.exec)
+	return r.gitCmd(args...).Run(ctx, r.exec)
 }
 
 // GetRemoteURL gets the URL of a remote.
 func (r *Repository) GetRemoteURL(ctx context.Context, remote string) (string, error) {
-	out, err := r.gitCmd(ctx, "remote", "get-url", remote).Output(ctx, r.exec)
+	out, err := r.gitCmd("remote", "get-url", remote).Output(ctx, r.exec)
 	if err != nil {
 		return "", fmt.Errorf("get remote url: %w", err)
 	}
@@ -343,31 +342,29 @@ func (r *Repository) GetRemoteURL(ctx context.Context, remote string) (string, e
 }
 
 // GetUser gets the current Git user (name and email).
-// Checks environment variables first (for GitHub Actions), then falls back to git config.
+// Checks environment variables first, then falls back to git config.
 func (r *Repository) GetUser(ctx context.Context) (Author, error) {
 	var author Author
 
 	// Check GitHub Actions environment variables first
 	if name := os.Getenv("GITHUB_ACTOR"); name != "" {
 		author.Name = name
-		// GitHub Actions doesn't set email by default, construct it
-		if email := os.Getenv("GITHUB_ACTOR_EMAIL"); email != "" {
-			author.Email = email
-		} else {
-			// Default GitHub Actions email format
-			author.Email = fmt.Sprintf("%s@users.noreply.github.com", name)
+		email := os.Getenv("GITHUB_ACTOR_EMAIL")
+		if email == "" {
+			return author, fmt.Errorf("GITHUB_ACTOR_EMAIL environment variable not set")
 		}
+		author.Email = email
 		return author, nil
 	}
 
 	// Fall back to git config
-	name, err := r.gitCmd(ctx, "config", "user.name").Output(ctx, r.exec)
+	name, err := r.gitCmd("config", "user.name").Output(ctx, r.exec)
 	if err != nil {
 		return author, fmt.Errorf("get user name: %w", err)
 	}
 	author.Name = strings.TrimSpace(string(name))
 
-	email, err := r.gitCmd(ctx, "config", "user.email").Output(ctx, r.exec)
+	email, err := r.gitCmd("config", "user.email").Output(ctx, r.exec)
 	if err != nil {
 		return author, fmt.Errorf("get user email: %w", err)
 	}
@@ -397,7 +394,7 @@ type gitCmd struct {
 }
 
 // newGitCmd creates a new git command.
-func newGitCmd(ctx context.Context, args ...string) *gitCmd {
+func newGitCmd(args ...string) *gitCmd {
 	return &gitCmd{
 		args: args,
 	}

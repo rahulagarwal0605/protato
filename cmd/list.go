@@ -26,7 +26,7 @@ func (c *ListCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // listLocal lists projects in the local workspace.
 func (c *ListCmd) listLocal(ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx)
+	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return err
 	}

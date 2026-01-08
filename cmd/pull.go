@@ -27,7 +27,7 @@ type pullPlan struct {
 
 // Run executes the pull command.
 func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	wctx, err := OpenWorkspace(ctx)
+	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,13 @@ func (c *PullCmd) buildOwnedPathsSet(ws *local.Workspace) map[string]bool {
 
 	for _, p := range ownedProjects {
 		ownedPaths[string(p)] = true
-		ownedPaths[string(ws.RegistryProjectPath(p))] = true
+		registryPath, err := ws.RegistryProjectPath(p)
+		if err != nil {
+			// If service is not configured, we can't determine registry path
+			// but we still add the local path to filter out exact matches
+			continue
+		}
+		ownedPaths[string(registryPath)] = true
 	}
 
 	return ownedPaths

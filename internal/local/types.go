@@ -26,8 +26,8 @@ type Config struct {
 	Service      string          `yaml:"service,omitempty"`       // Service name for registry namespacing
 	Directories  DirectoryConfig `yaml:"directories,omitempty"`   // Directory configuration
 	AutoDiscover bool            `yaml:"auto_discover,omitempty"` // Auto-discover projects from owned directory
-	Includes     []string        `yaml:"includes,omitempty"`      // Include patterns (glob) - when auto_discover=true: additional projects, when false: only these projects
-	Excludes     []string        `yaml:"excludes,omitempty"`      // Exclude patterns (glob) - exclude projects/files matching these patterns
+	Projects     []string        `yaml:"projects,omitempty"`      // Project patterns (glob) - when auto_discover=false: find projects matching these patterns within owned directory
+	Ignores      []string        `yaml:"ignores,omitempty"`       // Ignore patterns (glob) - ignore projects/files matching these patterns within owned directory
 }
 
 // DefaultDirectoryConfig returns the default directory configuration.
@@ -43,6 +43,8 @@ var (
 	ErrOwnedDirNotSet = errors.New("owned directory not configured")
 	// ErrVendorDirNotSet is returned when VendorDir is called but not configured.
 	ErrVendorDirNotSet = errors.New("vendor directory not configured")
+	// ErrServiceNotConfigured is returned when RegistryProjectPath is called but service is not configured.
+	ErrServiceNotConfigured = errors.New("service name not configured")
 )
 
 // OwnedDir returns the owned directory.

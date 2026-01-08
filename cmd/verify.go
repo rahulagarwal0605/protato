@@ -58,7 +58,7 @@ func (c *VerifyCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 // prepareVerifyContext initializes verification resources.
 func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOptions) (*verifyContext, error) {
-	wctx, err := OpenWorkspace(ctx)
+	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return nil, err
 	}

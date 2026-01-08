@@ -19,7 +19,7 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	wctx, err := OpenWorkspace(ctx)
+	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,10 @@ func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOpti
 	snapshot, _ := reg.Snapshot(ctx)
 
 	for _, p := range c.Paths {
-		registryPath := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
+		registryPath, err := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
+		if err != nil {
+			return fmt.Errorf("get registry path for %s: %w", p, err)
+		}
 		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath)); err != nil {
 			return err
 		}

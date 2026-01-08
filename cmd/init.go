@@ -16,8 +16,8 @@ import (
 // InitCmd initializes protato in a repository.
 type InitCmd struct {
 	Force          bool     `help:"Force overwrite existing configuration"`
-	Includes       []string `help:"Include patterns (glob, e.g., 'payments/**', 'orders/v*')" short:"i"`
-	Excludes       []string `help:"Exclude patterns (glob, e.g., '**/test/**', 'deprecated/*')" short:"e"`
+	Projects       []string `help:"Project patterns (glob) to find projects when auto-discover is disabled. Examples: 'payments/**', 'orders/v*'. Only used when auto_discover=false." short:"p"`
+	Ignores        []string `help:"Ignore patterns (glob) to exclude projects or files. Examples: '**/test/**' (exclude test projects/files), 'deprecated/*' (exclude deprecated projects). Works with both auto_discover=true (filter projects) and auto_discover=false (filter files)." short:"i"`
 	Service        string   `help:"Service name for registry namespacing" short:"s"`
 	OwnedDir       string   `help:"Directory for owned protos"`
 	VendorDir      string   `help:"Directory for consumed protos"`
@@ -35,6 +35,11 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 
 	// Gather configuration (interactive or from flags)
 	cfg := c.gatherConfig(repo.Root())
+
+	// Validate configuration consistency
+	if err := c.validateConfig(cfg); err != nil {
+		return err
+	}
 
 	logger.Log(ctx).Info().
 		Str("root", repo.Root()).
@@ -75,8 +80,8 @@ func (c *InitCmd) gatherConfig(root string) *local.Config {
 		},
 		// Auto-discover is enabled by default unless explicitly disabled
 		AutoDiscover: !c.NoAutoDiscover,
-		Includes:     c.Includes,
-		Excludes:     c.Excludes,
+		Projects:     c.Projects,
+		Ignores:      c.Ignores,
 	}
 
 	// Use interactive mode if not skipped
@@ -98,6 +103,16 @@ func (c *InitCmd) gatherConfig(root string) *local.Config {
 	return cfg
 }
 
+// validateConfig validates the configuration for consistency.
+func (c *InitCmd) validateConfig(cfg *local.Config) error {
+	// If auto_discover=true, projects should be empty (projects are skipped)
+	if cfg.AutoDiscover && len(cfg.Projects) > 0 {
+		return fmt.Errorf("projects cannot be set when auto_discover=true (projects are skipped when auto-discover is enabled)")
+	}
+
+	return nil
+}
+
 // runInteractiveSetup prompts the user for configuration.
 // It only prompts for fields that weren't provided via flags.
 func (c *InitCmd) runInteractiveSetup(root string, cfg *local.Config) {
@@ -113,8 +128,8 @@ func (c *InitCmd) runInteractiveSetup(root string, cfg *local.Config) {
 		c.promptOrShowOwnedDir,
 		c.promptOrShowVendorDir,
 		c.promptOrShowAutoDiscover,
-		c.promptOrShowIncludes,
-		c.promptOrShowExcludes,
+		c.promptOrShowProjects,
+		c.promptOrShowIgnores,
 	}
 
 	// Execute all prompts in order
@@ -188,36 +203,38 @@ func (c *InitCmd) promptOrShowAutoDiscover(root string, reader *bufio.Reader, cf
 	}
 }
 
-// promptOrShowIncludes prompts for includes or shows the flag value.
-func (c *InitCmd) promptOrShowIncludes(root string, reader *bufio.Reader, cfg *local.Config) {
-	if len(c.Includes) == 0 {
-		// Only prompt for includes when auto-discover is disabled
+// promptOrShowProjects prompts for projects or shows the flag value.
+// Only prompts when auto_discover=false, as projects are used to find projects matching patterns.
+func (c *InitCmd) promptOrShowProjects(root string, reader *bufio.Reader, cfg *local.Config) {
+	if len(c.Projects) == 0 {
+		// Only prompt for projects when auto-discover is disabled
 		if !cfg.AutoDiscover {
-			fmt.Printf("\nInclude patterns (glob, e.g., 'payments/**', 'orders/v*'):\n  [required when auto-discover is disabled]\n  > ")
+			fmt.Printf("\nProject patterns (glob, e.g., 'payments/**', 'orders/v*'):\n  [required when auto-discover is disabled]\n  > ")
 
 			input := readLine(reader)
 			if input != "" {
-				includes := ParseCommaSeparated(input)
-				cfg.Includes = append(cfg.Includes, includes...)
+				projects := ParseCommaSeparated(input)
+				cfg.Projects = append(cfg.Projects, projects...)
 			}
 		}
 	} else {
-		fmt.Printf("Includes: %v (from flags)\n", cfg.Includes)
+		fmt.Printf("Projects: %v (from flags)\n", cfg.Projects)
 	}
 }
 
-// promptOrShowExcludes prompts for excludes or shows the flag value.
-func (c *InitCmd) promptOrShowExcludes(root string, reader *bufio.Reader, cfg *local.Config) {
-	if len(c.Excludes) == 0 {
-		fmt.Printf("\nExclude patterns (glob, e.g., '**/test/**', 'deprecated/*'):\n  [optional, press Enter to skip]\n  > ")
+// promptOrShowIgnores prompts for ignores or shows the flag value.
+// Ignores can be used in both auto_discover=true (filter discovered projects) and auto_discover=false (filter files within projects).
+func (c *InitCmd) promptOrShowIgnores(root string, reader *bufio.Reader, cfg *local.Config) {
+	if len(c.Ignores) == 0 {
+		fmt.Printf("\nIgnore patterns (glob, e.g., '**/test/**', 'deprecated/*'):\n  [optional, press Enter to skip]\n  > ")
 
 		input := readLine(reader)
 		if input != "" {
-			excludes := ParseCommaSeparated(input)
-			cfg.Excludes = append(cfg.Excludes, excludes...)
+			ignores := ParseCommaSeparated(input)
+			cfg.Ignores = append(cfg.Ignores, ignores...)
 		}
 	} else {
-		fmt.Printf("Excludes: %v (from flags)\n", cfg.Excludes)
+		fmt.Printf("Ignores: %v (from flags)\n", cfg.Ignores)
 	}
 }
 
@@ -236,7 +253,7 @@ func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Con
 	return ws, nil
 }
 
-// createProjects creates project directories for explicit includes when not using auto-discover.
+// createProjects creates project directories for explicit projects when not using auto-discover.
 func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *local.Config) error {
 	// When auto-discover is enabled, projects are discovered automatically
 	if cfg.AutoDiscover {
@@ -244,7 +261,7 @@ func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *
 	}
 
 	// When auto-discover is disabled, create directories for literal paths (not glob patterns)
-	literalPaths := ExtractLiteralPaths(cfg.Includes)
+	literalPaths := ExtractLiteralPaths(cfg.Projects)
 	if len(literalPaths) == 0 {
 		return nil
 	}
