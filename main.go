@@ -116,10 +116,10 @@ func getDefaultCacheDir() (string, error) {
 }
 
 // setupCLI creates and configures the Kong CLI parser.
-func setupCLI(ctx context.Context, defaultCacheDir string) (mainCmd, *kong.Kong) {
-	var cli mainCmd
+func setupCLI(ctx context.Context, defaultCacheDir string) (*mainCmd, *kong.Kong) {
+	cli := &mainCmd{}
 
-	parser := kong.Must(&cli,
+	parser := kong.Must(cli,
 		kong.Name("protato"),
 		kong.Description("A CLI tool for managing protobuf definitions across distributed Git repositories"),
 		kong.UsageOnError(),
