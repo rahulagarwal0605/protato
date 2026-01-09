@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 
@@ -46,10 +47,11 @@ type gitRepository interface {
 
 // Cache manages the local cache of the remote registry.
 type Cache struct {
-	root string        // Cache directory path
-	repo gitRepository // Bare Git repository
-	url  string        // Registry URL
-	mu   sync.Mutex    // Protects concurrent access to git operations
+	root     string        // Cache directory path
+	repo     gitRepository // Bare Git repository
+	url      string        // Registry URL
+	mu       sync.Mutex    // Protects concurrent access to git operations
+	lockFile *os.File      // File lock for cross-process synchronization
 }
 
 // Open opens or initializes the registry cache.
@@ -87,7 +89,34 @@ func Open(ctx context.Context, cacheDir string, registryURL string) (*Cache, err
 		url:  registryURL,
 	}
 
+	// Acquire file lock to prevent concurrent access from multiple processes
+	lockPath := filepath.Join(cacheRoot, ".protato.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("create lock file: %w", err)
+	}
+
+	// Try to acquire exclusive lock (non-blocking)
+	err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("cache is locked by another protato process (try: pkill protato or killall protato)")
+	}
+
+	cache.lockFile = lockFile
+	logger.Log(ctx).Debug().Str("lock", lockPath).Msg("Acquired cache lock")
+
 	return cache, nil
+}
+
+// Close releases the cache lock and closes resources.
+// The lock is automatically released when the process exits, but this allows explicit cleanup.
+func (r *Cache) Close() error {
+	if r.lockFile != nil {
+		syscall.Flock(int(r.lockFile.Fd()), syscall.LOCK_UN)
+		return r.lockFile.Close()
+	}
+	return nil
 }
 
 // Refresh refreshes the cache from remote.
