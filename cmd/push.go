@@ -266,8 +266,15 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 		return nil
 	}
 
+	// Get owned directory name (e.g., "proto") for import path mapping
+	ownedDir, err := pctx.wctx.WS.OwnedDirName()
+	if err != nil {
+		logger.Log(ctx).Warn().Err(err).Msg("Could not get owned directory, using default")
+		ownedDir = "proto"
+	}
+
 	logger.Log(ctx).Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects); err != nil {
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir); err != nil {
 		return fmt.Errorf("%s: %w", errValidationFailed, err)
 	}
 

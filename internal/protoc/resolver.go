@@ -28,8 +28,13 @@ type RegistryResolver struct {
 	// fileCache caches resolved files - pre-loaded before compilation
 	fileCache map[string][]byte
 
-	// servicePrefix is used to map import paths like "proto/..." to registry paths
+	// servicePrefix is used to map import paths to registry paths
+	// e.g., "payment-service" maps "proto/common/..." to "payment-service/common/..."
 	servicePrefix string
+
+	// importPrefix is the local directory prefix used in proto imports
+	// e.g., "proto" if imports use "proto/common/address.proto"
+	importPrefix string
 
 	// preloaded indicates if all files have been pre-loaded into cache
 	preloaded bool
@@ -38,11 +43,17 @@ type RegistryResolver struct {
 // NewRegistryResolver creates a new registry resolver.
 func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot git.Hash) *RegistryResolver {
 	return &RegistryResolver{
-		cache:     cache,
-		snapshot:  snapshot,
-		projects:  make(map[registry.ProjectPath]struct{}),
-		fileCache: make(map[string][]byte),
+		cache:        cache,
+		snapshot:     snapshot,
+		projects:     make(map[registry.ProjectPath]struct{}),
+		fileCache:    make(map[string][]byte),
+		importPrefix: "proto", // default, can be overridden
 	}
+}
+
+// SetImportPrefix sets the local directory prefix used in proto imports.
+func (r *RegistryResolver) SetImportPrefix(prefix string) {
+	r.importPrefix = prefix
 }
 
 // PreloadFiles loads all proto files from the given projects into memory.
@@ -88,21 +99,15 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 			// Cache at registry path
 			r.fileCache[registryPath] = content
 
-			// Also cache at import path (proto/...) if service prefix is set
+			// Also cache at import path (e.g., "proto/...") if service prefix is set
 			// e.g., "payment-service/common/address.proto" -> "proto/common/address.proto"
 			if r.servicePrefix != "" && strings.HasPrefix(registryPath, r.servicePrefix+"/") {
 				subPath := strings.TrimPrefix(registryPath, r.servicePrefix+"/")
-				importPath := "proto/" + subPath
-				r.fileCache[importPath] = content
+				importPath := r.importPrefix + "/" + subPath
 
-				// For vendored files, also cache at their direct import path
-				// e.g., "vendors/buf/validate/validate.proto" -> "buf/validate/validate.proto"
-				// But NOT for google/protobuf - those come from standard imports
-				if strings.HasPrefix(subPath, "vendors/") {
-					vendorPath := strings.TrimPrefix(subPath, "vendors/")
-					if !strings.HasPrefix(vendorPath, "google/protobuf/") {
-						r.fileCache[vendorPath] = content
-					}
+				// Skip google/protobuf anywhere in path - those come from standard imports
+				if !strings.Contains(subPath, "google/protobuf/") {
+					r.fileCache[importPath] = content
 				}
 			}
 
@@ -240,9 +245,11 @@ func (r *RegistryResolver) mapImportPath(importPath string) string {
 		return importPath
 	}
 
-	// Map "proto/..." to "service-prefix/..."
-	if strings.HasPrefix(importPath, "proto/") {
-		return r.servicePrefix + "/" + strings.TrimPrefix(importPath, "proto/")
+	// Map "importPrefix/..." to "service-prefix/..."
+	// e.g., "proto/common/..." -> "payment-service/common/..."
+	prefix := r.importPrefix + "/"
+	if strings.HasPrefix(importPath, prefix) {
+		return r.servicePrefix + "/" + strings.TrimPrefix(importPath, prefix)
 	}
 
 	return importPath
@@ -347,15 +354,22 @@ func DiscoverDependencies(
 }
 
 // ValidateProtos validates that the proto files compile successfully.
+// ownedDir is the local directory prefix used in proto imports (e.g., "proto").
 func ValidateProtos(
 	ctx context.Context,
 	cache *registry.Cache,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
+	ownedDir string,
 ) error {
 	log := logger.Log(ctx)
 
 	resolver := NewRegistryResolver(ctx, cache, snapshot)
+
+	// Set the import prefix (e.g., "proto") from the owned directory
+	if ownedDir != "" {
+		resolver.SetImportPrefix(ownedDir)
+	}
 
 	// Extract service prefix from project paths
 	if len(projects) > 0 {
@@ -374,7 +388,7 @@ func ValidateProtos(
 		return nil
 	}
 
-	// Build list of proto files to compile using import paths (proto/...)
+	// Build list of proto files to compile using import paths
 	// This matches how the files are imported in the proto source
 	var protoFiles []string
 	for _, project := range projects {
@@ -388,17 +402,17 @@ func ValidateProtos(
 
 		projectStr := string(project)
 		for _, f := range filesRes.Files {
-			// Use import path format: proto/common/address.proto
+			// Use import path format: <ownedDir>/common/address.proto
 			// Instead of registry path: payment-service/common/address.proto
 			if resolver.servicePrefix != "" && strings.HasPrefix(projectStr, resolver.servicePrefix+"/") {
 				subPath := strings.TrimPrefix(projectStr, resolver.servicePrefix+"/")
 
-				// Skip vendored google/protobuf files - they're provided by standard imports
-				if strings.HasPrefix(subPath, "vendors/google/protobuf") {
+				// Skip google/protobuf files anywhere - they're provided by standard imports
+				if strings.Contains(subPath, "google/protobuf") {
 					continue
 				}
 
-				importPath := "proto/" + subPath + "/" + f.Path
+				importPath := resolver.importPrefix + "/" + subPath + "/" + f.Path
 				protoFiles = append(protoFiles, importPath)
 			} else {
 				// Fallback to registry path if no service prefix

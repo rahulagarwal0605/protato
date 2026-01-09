@@ -189,13 +189,18 @@ func (ws *Workspace) Root() string {
 	return ws.root
 }
 
-// OwnedDir returns the directory path for owned (producer) protos.
+// OwnedDir returns the absolute directory path for owned (producer) protos.
 func (ws *Workspace) OwnedDir() (string, error) {
 	dir, err := ws.config.OwnedDir()
 	if err != nil {
 		return "", fmt.Errorf("get owned directory: %w", err)
 	}
 	return filepath.Join(ws.root, dir), nil
+}
+
+// OwnedDirName returns just the owned directory name (e.g., "proto") without the root path.
+func (ws *Workspace) OwnedDirName() (string, error) {
+	return ws.config.OwnedDir()
 }
 
 // VendorDir returns the directory path for consumed (vendor) protos.
