@@ -99,6 +99,7 @@ func (r *Cache) Refresh(ctx context.Context) error {
 		},
 		Depth: 1,
 		Prune: true,
+		Force: true, // Force update to handle non-fast-forward (cache can be reset)
 	})
 }
 

@@ -115,6 +115,9 @@ func (r *Repository) Fetch(ctx context.Context, opts FetchOptions) error {
 	if opts.Prune {
 		args = append(args, "--prune")
 	}
+	if opts.Force {
+		args = append(args, "--force")
+	}
 	if opts.Remote != "" {
 		args = append(args, opts.Remote)
 	}

@@ -2,9 +2,11 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // Hash represents a Git commit/tree/blob hash.
@@ -101,7 +103,16 @@ type DefaultExecer struct{}
 
 // Run executes a command.
 func (e *DefaultExecer) Run(cmd *exec.Cmd) error {
-	return cmd.Run()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		// Include stderr in error message if available
+		if stderr.Len() > 0 {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+	}
+	return err
 }
 
 // Output executes a command and returns its output.
@@ -127,6 +138,7 @@ type FetchOptions struct {
 	RefSpecs []Refspec // Refspecs to fetch
 	Depth    int       // Fetch depth
 	Prune    bool      // Prune remote tracking refs
+	Force    bool      // Force update refs (allow non-fast-forward)
 }
 
 // PushOptions contains options for pushing.
