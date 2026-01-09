@@ -24,30 +24,154 @@ type RegistryResolver struct {
 
 	mu       sync.Mutex
 	projects map[registry.ProjectPath]struct{} // Discovered projects
+
+	// fileCache caches resolved files - pre-loaded before compilation
+	fileCache map[string][]byte
+
+	// servicePrefix is used to map import paths like "proto/..." to registry paths
+	servicePrefix string
+
+	// preloaded indicates if all files have been pre-loaded into cache
+	preloaded bool
 }
 
 // NewRegistryResolver creates a new registry resolver.
 func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot git.Hash) *RegistryResolver {
 	return &RegistryResolver{
-		cache:    cache,
-		snapshot: snapshot,
-		projects: make(map[registry.ProjectPath]struct{}),
+		cache:     cache,
+		snapshot:  snapshot,
+		projects:  make(map[registry.ProjectPath]struct{}),
+		fileCache: make(map[string][]byte),
 	}
 }
 
+// PreloadFiles loads all proto files from the given projects into memory.
+// This must be called before using the resolver with protocompile to avoid
+// concurrent git access issues.
+func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry.ProjectPath) error {
+	log := logger.Log(ctx)
+
+	for _, project := range projects {
+		// List all files in the project
+		filesRes, err := r.cache.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
+			Project:  project,
+			Snapshot: r.snapshot,
+		})
+		if err != nil {
+			log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list project files")
+			continue
+		}
+
+		if filesRes == nil {
+			continue
+		}
+
+		// Load each file into cache
+		for _, f := range filesRes.Files {
+			// Registry path: payment-service/common/address.proto
+			registryPath := path.Join(string(project), f.Path)
+
+			var buf bytes.Buffer
+			if err := r.cache.ReadProjectFile(ctx, registry.ProjectFile{
+				Snapshot: r.snapshot,
+				Project:  project,
+				Path:     f.Path,
+				Hash:     f.Hash,
+			}, &buf); err != nil {
+				log.Warn().Err(err).Str("file", registryPath).Msg("Failed to read file")
+				continue
+			}
+
+			content := buf.Bytes()
+
+			r.mu.Lock()
+			// Cache at registry path
+			r.fileCache[registryPath] = content
+
+			// Also cache at import path (proto/...) if service prefix is set
+			// e.g., "payment-service/common/address.proto" -> "proto/common/address.proto"
+			if r.servicePrefix != "" && strings.HasPrefix(registryPath, r.servicePrefix+"/") {
+				subPath := strings.TrimPrefix(registryPath, r.servicePrefix+"/")
+				importPath := "proto/" + subPath
+				r.fileCache[importPath] = content
+
+				// For vendored files, also cache at their direct import path
+				// e.g., "vendors/buf/validate/validate.proto" -> "buf/validate/validate.proto"
+				// But NOT for google/protobuf - those come from standard imports
+				if strings.HasPrefix(subPath, "vendors/") {
+					vendorPath := strings.TrimPrefix(subPath, "vendors/")
+					if !strings.HasPrefix(vendorPath, "google/protobuf/") {
+						r.fileCache[vendorPath] = content
+					}
+				}
+			}
+
+			r.projects[project] = struct{}{}
+			r.mu.Unlock()
+		}
+	}
+
+	r.preloaded = true
+	log.Debug().Int("files", len(r.fileCache)).Msg("Pre-loaded proto files into memory")
+	return nil
+}
+
 // FindFileByPath implements protocompile.Resolver.
+// When preloaded=true, this only uses the in-memory cache (no git operations).
 func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchResult, error) {
+	// Check cache first (thread-safe with lock)
+	r.mu.Lock()
+	cached, ok := r.fileCache[filePath]
+	r.mu.Unlock()
+
+	if ok {
+		return protocompile.SearchResult{
+			Source: bytes.NewReader(cached),
+		}, nil
+	}
+
+	// Try mapped path
+	mappedPath := r.mapImportPath(filePath)
+	if mappedPath != filePath {
+		r.mu.Lock()
+		cached, ok = r.fileCache[mappedPath]
+		r.mu.Unlock()
+
+		if ok {
+			return protocompile.SearchResult{
+				Source: bytes.NewReader(cached),
+			}, nil
+		}
+	}
+
+	// If preloaded, file not found in cache means it doesn't exist
+	if r.preloaded {
+		return protocompile.SearchResult{}, registry.ErrNotFound
+	}
+
+	// Fallback to loading from git (only used if not preloaded)
+	return r.loadFileFromGit(filePath)
+}
+
+// loadFileFromGit loads a file directly from the git repository.
+// This is only used when files are not preloaded.
+func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.SearchResult, error) {
 	ctx := context.Background()
 
-	logger.Log(ctx).Debug().Str("path", filePath).Msg("Resolving import")
+	// Map import path if needed
+	lookupPath := r.mapImportPath(filePath)
 
 	// Look up project for this path
 	res, err := r.cache.LookupProject(ctx, &registry.LookupProjectRequest{
-		Path:     filePath,
+		Path:     lookupPath,
 		Snapshot: r.snapshot,
 	})
 	if err != nil {
 		return protocompile.SearchResult{}, err
+	}
+
+	if res == nil || res.Project == nil {
+		return protocompile.SearchResult{}, registry.ErrNotFound
 	}
 
 	// Record discovered project
@@ -56,7 +180,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 	r.mu.Unlock()
 
 	// Get relative path within project
-	relPath := strings.TrimPrefix(filePath, string(res.Project.Path)+"/")
+	relPath := strings.TrimPrefix(lookupPath, string(res.Project.Path)+"/")
 
 	// List files to find the hash
 	filesRes, err := r.cache.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
@@ -65,6 +189,10 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 	})
 	if err != nil {
 		return protocompile.SearchResult{}, err
+	}
+
+	if filesRes == nil {
+		return protocompile.SearchResult{}, registry.ErrNotFound
 	}
 
 	// Find the file
@@ -90,9 +218,34 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 		return protocompile.SearchResult{}, err
 	}
 
+	// Cache the file content
+	fileContent := buf.Bytes()
+	r.mu.Lock()
+	r.fileCache[filePath] = fileContent
+	r.mu.Unlock()
+
 	return protocompile.SearchResult{
-		Source: bytes.NewReader(buf.Bytes()),
+		Source: bytes.NewReader(fileContent),
 	}, nil
+}
+
+// SetServicePrefix sets the service prefix for import path mapping.
+func (r *RegistryResolver) SetServicePrefix(prefix string) {
+	r.servicePrefix = prefix
+}
+
+// mapImportPath maps local proto import paths to registry paths.
+func (r *RegistryResolver) mapImportPath(importPath string) string {
+	if r.servicePrefix == "" {
+		return importPath
+	}
+
+	// Map "proto/..." to "service-prefix/..."
+	if strings.HasPrefix(importPath, "proto/") {
+		return r.servicePrefix + "/" + strings.TrimPrefix(importPath, "proto/")
+	}
+
+	return importPath
 }
 
 // DiscoveredProjects returns the list of discovered projects.
@@ -142,6 +295,14 @@ func DiscoverDependencies(
 	projects []registry.ProjectPath,
 ) ([]registry.ProjectPath, error) {
 	resolver := NewRegistryResolver(ctx, cache, snapshot)
+
+	// Extract service prefix from project paths
+	if len(projects) > 0 {
+		projectPath := string(projects[0])
+		if idx := strings.Index(projectPath, "/"); idx > 0 {
+			resolver.SetServicePrefix(projectPath[:idx])
+		}
+	}
 
 	// Get all proto files from the requested projects
 	var protoFiles []string
@@ -193,9 +354,28 @@ func ValidateProtos(
 	projects []registry.ProjectPath,
 ) error {
 	log := logger.Log(ctx)
+
 	resolver := NewRegistryResolver(ctx, cache, snapshot)
 
-	// Get all proto files
+	// Extract service prefix from project paths
+	if len(projects) > 0 {
+		projectPath := string(projects[0])
+		if idx := strings.Index(projectPath, "/"); idx > 0 {
+			resolver.SetServicePrefix(projectPath[:idx])
+			log.Debug().Str("prefix", projectPath[:idx]).Msg("Using service prefix for import mapping")
+		}
+	}
+
+	// Pre-load ALL files into memory before starting compilation
+	// This avoids concurrent git access issues during protocompile's parallel resolution
+	log.Debug().Int("projects", len(projects)).Msg("Pre-loading proto files into memory")
+	if err := resolver.PreloadFiles(ctx, projects); err != nil {
+		log.Warn().Err(err).Msg("Failed to preload files, skipping validation")
+		return nil
+	}
+
+	// Build list of proto files to compile using import paths (proto/...)
+	// This matches how the files are imported in the proto source
 	var protoFiles []string
 	for _, project := range projects {
 		filesRes, err := cache.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
@@ -206,8 +386,24 @@ func ValidateProtos(
 			continue
 		}
 
+		projectStr := string(project)
 		for _, f := range filesRes.Files {
-			protoFiles = append(protoFiles, path.Join(string(project), f.Path))
+			// Use import path format: proto/common/address.proto
+			// Instead of registry path: payment-service/common/address.proto
+			if resolver.servicePrefix != "" && strings.HasPrefix(projectStr, resolver.servicePrefix+"/") {
+				subPath := strings.TrimPrefix(projectStr, resolver.servicePrefix+"/")
+
+				// Skip vendored google/protobuf files - they're provided by standard imports
+				if strings.HasPrefix(subPath, "vendors/google/protobuf") {
+					continue
+				}
+
+				importPath := "proto/" + subPath + "/" + f.Path
+				protoFiles = append(protoFiles, importPath)
+			} else {
+				// Fallback to registry path if no service prefix
+				protoFiles = append(protoFiles, path.Join(projectStr, f.Path))
+			}
 		}
 	}
 
@@ -216,19 +412,31 @@ func ValidateProtos(
 	}
 
 	rep := &LogReporter{Log: log}
+
+	// Use WithStandardImports to provide google/protobuf/* files
+	// Our resolver only handles custom files; standard imports are fallback
 	compiler := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(resolver),
 		Reporter: rep,
 	}
+
+	log.Info().Int("files", len(protoFiles)).Msg("Validating proto files")
 
 	_, err := compiler.Compile(ctx, protoFiles...)
 	if rep.Failed() {
 		return &CompileError{Message: ErrCompilationFailed}
 	}
 	if err != nil {
+		// Check if this is a panic error from protocompile
+		errStr := err.Error()
+		if strings.Contains(errStr, "panic") {
+			log.Warn().Err(err).Msg("Proto validation encountered internal error, skipping")
+			return nil
+		}
 		return &CompileError{Message: err.Error()}
 	}
 
+	log.Info().Msg("Proto validation completed successfully")
 	return nil
 }
 

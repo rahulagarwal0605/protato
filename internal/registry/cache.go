@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -48,6 +49,7 @@ type Cache struct {
 	root string        // Cache directory path
 	repo gitRepository // Bare Git repository
 	url  string        // Registry URL
+	mu   sync.Mutex    // Protects concurrent access to git operations
 }
 
 // Open opens or initializes the registry cache.
@@ -117,6 +119,9 @@ func (r *Cache) Snapshot(ctx context.Context) (git.Hash, error) {
 
 // LookupProject finds a project by path.
 func (r *Cache) LookupProject(ctx context.Context, req *LookupProjectRequest) (*LookupProjectResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	snapshot, err := r.getOrCreateSnapshot(ctx, req.Snapshot)
 	if err != nil {
 		return nil, err
@@ -242,6 +247,9 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 
 // ListProjectFiles lists all files in a project.
 func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesRequest) (*ListProjectFilesResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	snapshot, err := r.getOrCreateSnapshot(ctx, req.Snapshot)
 	if err != nil {
 		return nil, err
@@ -286,6 +294,9 @@ func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesReque
 
 // ReadProjectFile reads a file from the registry.
 func (r *Cache) ReadProjectFile(ctx context.Context, file ProjectFile, writer io.Writer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	return r.repo.ReadObject(ctx, git.BlobType, file.Hash, writer)
 }
 
