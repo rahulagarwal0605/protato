@@ -166,13 +166,6 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 		return protocompile.SearchResult{}, fmt.Errorf("resolver is nil")
 	}
 
-	ctx := context.Background()
-
-	logger.Log(ctx).Debug().
-		Str("filePath", filePath).
-		Bool("preloaded", r.preloaded).
-		Msg("FindFileByPath: called")
-
 	// Map import path first to ensure consistency
 	// e.g., "buf/validate/..." -> "druid/buf/validate/..." when ownedDir is "."
 	mappedPath := r.mapImportPath(filePath)
@@ -184,17 +177,8 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	if ok {
 		if cached == nil {
-			logger.Log(ctx).Error().
-				Str("filePath", filePath).
-				Str("mappedPath", mappedPath).
-				Msg("FindFileByPath: cached content is nil")
 			return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 		}
-		logger.Log(ctx).Debug().
-			Str("filePath", filePath).
-			Str("mappedPath", mappedPath).
-			Int("size", len(cached)).
-			Msg("FindFileByPath: found in cache (mapped)")
 		return protocompile.SearchResult{
 			Source: bytes.NewReader(cached),
 		}, nil
@@ -208,15 +192,8 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 		if ok {
 			if cached == nil {
-				logger.Log(ctx).Error().
-					Str("filePath", filePath).
-					Msg("FindFileByPath: cached content is nil (original)")
 				return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 			}
-			logger.Log(ctx).Debug().
-				Str("filePath", filePath).
-				Int("size", len(cached)).
-				Msg("FindFileByPath: found in cache (original)")
 			return protocompile.SearchResult{
 				Source: bytes.NewReader(cached),
 			}, nil
@@ -225,19 +202,8 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	// If preloaded, file not found in cache means it doesn't exist
 	if r.preloaded {
-		logger.Log(ctx).Debug().
-			Str("filePath", filePath).
-			Str("mappedPath", mappedPath).
-			Msg("FindFileByPath: not found (preloaded mode)")
 		return protocompile.SearchResult{}, registry.ErrNotFound
 	}
-
-	// Debug: log when falling back to git
-	logger.Log(ctx).Debug().
-		Str("filePath", filePath).
-		Str("mappedPath", mappedPath).
-		Bool("preloaded", r.preloaded).
-		Msg("FindFileByPath: falling back to git")
 
 	// Fallback to loading from git (only used if not preloaded)
 	return r.loadFileFromGit(filePath)
