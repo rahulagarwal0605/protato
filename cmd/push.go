@@ -273,8 +273,10 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 		ownedDir = "proto"
 	}
 
+	workspaceRoot := pctx.wctx.WS.Root()
+
 	logger.Log(ctx).Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir); err != nil {
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, workspaceRoot); err != nil {
 		return fmt.Errorf("%s: %w", errValidationFailed, err)
 	}
 

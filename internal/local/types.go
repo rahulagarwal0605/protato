@@ -48,9 +48,14 @@ var (
 )
 
 // OwnedDir returns the owned directory.
+// If the configured directory is ".", returns "" (empty string) to represent root.
 func (c *Config) OwnedDir() (string, error) {
 	if c.Directories.Owned == "" {
 		return "", ErrOwnedDirNotSet
+	}
+	// Treat "." as root directory (empty string)
+	if c.Directories.Owned == "." {
+		return "", nil
 	}
 	return c.Directories.Owned, nil
 }

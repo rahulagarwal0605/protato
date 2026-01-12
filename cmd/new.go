@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 )
 
 // NewCmd creates a new project (claim ownership).
@@ -36,7 +37,26 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return fmt.Errorf("add projects: %w", err)
 	}
 
+	logProjectCreationSuccess(ctx, wctx, c.Paths)
+
 	return nil
+}
+
+// logProjectCreationSuccess logs success messages for each created project.
+func logProjectCreationSuccess(ctx context.Context, wctx *WorkspaceContext, paths []string) {
+	for _, p := range paths {
+		registryPath, err := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
+		if err == nil {
+			logger.Log(ctx).Info().
+				Str("project", p).
+				Str("registry_path", string(registryPath)).
+				Msg("Project created successfully")
+		} else {
+			logger.Log(ctx).Info().
+				Str("project", p).
+				Msg("Project created successfully")
+		}
+	}
 }
 
 // validatePaths validates all project paths.

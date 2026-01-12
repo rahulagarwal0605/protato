@@ -16,8 +16,8 @@ import (
 // InitCmd initializes protato in a repository.
 type InitCmd struct {
 	Force          bool     `help:"Force overwrite existing configuration"`
-	Projects       []string `help:"Project patterns (glob) to find projects when auto-discover is disabled. Examples: 'payments/**', 'orders/v*'. Only used when auto_discover=false." short:"p"`
-	Ignores        []string `help:"Ignore patterns (glob) to exclude projects or files. Examples: '**/test/**' (exclude test projects/files), 'deprecated/*' (exclude deprecated projects). Works with both auto_discover=true (filter projects) and auto_discover=false (filter files)." short:"i"`
+	Projects       []string `help:"Project patterns (glob) to find projects when auto-discover is disabled. Examples: payments/**, orders/v*. Only used when auto_discover=false." short:"p"`
+	Ignores        []string `help:"Ignore patterns (glob) to exclude projects or files. Examples: **/test/** (exclude test projects/files), deprecated/* (exclude deprecated projects). Works with both auto_discover=true (filter projects) and auto_discover=false (filter files)." short:"i"`
 	Service        string   `help:"Service name for registry namespacing" short:"s"`
 	OwnedDir       string   `help:"Directory for owned protos"`
 	VendorDir      string   `help:"Directory for consumed protos"`
@@ -237,7 +237,7 @@ func (c *InitCmd) promptOrShowProjects(ctx context.Context, root string, reader 
 	if len(c.Projects) == 0 {
 		// Only prompt for projects when auto-discover is disabled
 		if !cfg.AutoDiscover {
-			fmt.Printf("\nProject patterns (glob, e.g., 'payments/**', 'orders/v*'):\n  [required when auto-discover is disabled]\n  > ")
+			fmt.Printf("\nProject patterns (glob, e.g., payments/**, orders/v*):\n  [required when auto-discover is disabled]\n  > ")
 
 			input, err := readLine(ctx, reader)
 			if err != nil {
@@ -258,7 +258,7 @@ func (c *InitCmd) promptOrShowProjects(ctx context.Context, root string, reader 
 // Ignores can be used in both auto_discover=true (filter discovered projects) and auto_discover=false (filter files within projects).
 func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *bufio.Reader, cfg *local.Config) error {
 	if len(c.Ignores) == 0 {
-		fmt.Printf("\nIgnore patterns (glob, e.g., '**/test/**', 'deprecated/*'):\n  [optional, press Enter to skip]\n  > ")
+		fmt.Printf("\nIgnore patterns (glob, e.g., **/test/**, deprecated/*):\n  [optional, press Enter to skip]\n  > ")
 
 		input, err := readLine(ctx, reader)
 		if err != nil {
