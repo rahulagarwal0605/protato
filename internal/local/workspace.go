@@ -907,18 +907,7 @@ func (ws *Workspace) OrphanedFiles(ctx context.Context) ([]string, error) {
 		receivedSet[string(r.Project)] = true
 	}
 
-	// Check owned directory for orphaned files
-	ownedDir, err := ws.OwnedDir()
-	if err != nil {
-		return nil, err
-	}
-	ownedOrphans, err := ws.findOrphanedInDir(ownedDir, ownedSet)
-	if err != nil {
-		return nil, err
-	}
-	orphaned = append(orphaned, ownedOrphans...)
-
-	// Check vendor directory for orphaned files
+	// Check vendor directory for orphaned files first
 	vendorDir, err := ws.VendorDir()
 	if err != nil {
 		return nil, err
@@ -929,6 +918,18 @@ func (ws *Workspace) OrphanedFiles(ctx context.Context) ([]string, error) {
 	}
 	orphaned = append(orphaned, vendorOrphans...)
 
+	// Check owned directory for orphaned files
+	// Exclude vendor directory from owned directory walk to avoid checking vendor files against owned projects
+	ownedDir, err := ws.OwnedDir()
+	if err != nil {
+		return nil, err
+	}
+	ownedOrphans, err := ws.findOrphanedInDirExcluding(ownedDir, ownedSet, vendorDir)
+	if err != nil {
+		return nil, err
+	}
+	orphaned = append(orphaned, ownedOrphans...)
+
 	return orphaned, nil
 }
 
@@ -936,11 +937,17 @@ func (ws *Workspace) OrphanedFiles(ctx context.Context) ([]string, error) {
 func (ws *Workspace) findOrphanedInDir(dirPath string, knownProjects map[string]bool) ([]string, error) {
 	var orphaned []string
 
-	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+	// Make dirPath absolute to ensure filepath.Rel works correctly
+	absDirPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(absDirPath); os.IsNotExist(err) {
 		return orphaned, nil
 	}
 
-	err := filepath.WalkDir(dirPath, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(absDirPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -954,8 +961,87 @@ func (ws *Workspace) findOrphanedInDir(dirPath string, knownProjects map[string]
 			return nil
 		}
 
+		// Only consider .proto files as orphaned
+		if !strings.HasSuffix(name, protoFileExt) {
+			return nil
+		}
+
 		// Get relative path from directory
-		relPath, err := filepath.Rel(dirPath, p)
+		relPath, err := filepath.Rel(absDirPath, p)
+		if err != nil {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		// Check if file belongs to any known project
+		belongsToProject := false
+		for proj := range knownProjects {
+			if strings.HasPrefix(relPath, proj+"/") || relPath == proj {
+				belongsToProject = true
+				break
+			}
+		}
+
+		if !belongsToProject {
+			// Return path relative to repo root
+			repoRelPath, _ := filepath.Rel(ws.root, p)
+			orphaned = append(orphaned, repoRelPath)
+		}
+
+		return nil
+	})
+
+	return orphaned, err
+}
+
+// findOrphanedInDirExcluding finds files in a directory that don't belong to known projects,
+// excluding a specific subdirectory (e.g., vendor directory).
+func (ws *Workspace) findOrphanedInDirExcluding(dirPath string, knownProjects map[string]bool, excludeDir string) ([]string, error) {
+	var orphaned []string
+
+	// Make dirPath absolute to ensure filepath.Rel works correctly
+	absDirPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Make excludeDir absolute
+	absExcludeDir, err := filepath.Abs(excludeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(absDirPath); os.IsNotExist(err) {
+		return orphaned, nil
+	}
+
+	err = filepath.WalkDir(absDirPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip the excluded directory entirely
+		if d.IsDir() {
+			// Check if this directory is the excluded directory
+			if p == absExcludeDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip special files
+		name := d.Name()
+		if name == lockFileName || name == gitattributesName {
+			return nil
+		}
+
+		// Only consider .proto files as orphaned
+		if !strings.HasSuffix(name, protoFileExt) {
+			return nil
+		}
+
+		// Get relative path from directory
+		relPath, err := filepath.Rel(absDirPath, p)
 		if err != nil {
 			return nil
 		}

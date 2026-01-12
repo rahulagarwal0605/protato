@@ -18,8 +18,8 @@ type VerifyCmd struct {
 	Offline bool `help:"Don't refresh registry"`
 }
 
-// verifyContext holds resources for verification.
-type verifyContext struct {
+// verifyCtx holds resources for verification.
+type verifyCtx struct {
 	wctx    *WorkspaceContext
 	reg     *registry.Cache
 	repoURL string
@@ -27,7 +27,7 @@ type verifyContext struct {
 
 // Run executes the verify command.
 func (c *VerifyCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	vctx, err := c.prepareVerifyContext(ctx, globals)
+	vctx, err := c.prepareverifyCtx(ctx, globals)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,8 @@ func (c *VerifyCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	return nil
 }
 
-// prepareVerifyContext initializes verification resources.
-func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOptions) (*verifyContext, error) {
+// prepareverifyCtx initializes verification resources.
+func (c *VerifyCmd) prepareverifyCtx(ctx context.Context, globals *GlobalOptions) (*verifyCtx, error) {
 	wctx, err := OpenWorkspaceContext(ctx)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (c *VerifyCmd) prepareVerifyContext(ctx context.Context, globals *GlobalOpt
 		}
 	}
 
-	return &verifyContext{
+	return &verifyCtx{
 		wctx:    wctx,
 		reg:     reg,
 		repoURL: repoURL,
@@ -100,7 +100,7 @@ func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions) (*
 }
 
 // verifyOwnedProjects checks ownership claims for owned projects.
-func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext) error {
+func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyCtx) error {
 	logger.Log(ctx).Info().Msg("Checking owned project claims")
 
 	snapshot, _ := vctx.reg.Snapshot(ctx)
@@ -123,7 +123,7 @@ func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyContext
 }
 
 // verifyPulledProjects checks integrity of pulled projects.
-func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContext) error {
+func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyCtx) error {
 	logger.Log(ctx).Info().Msg("Checking pulled project integrity")
 
 	receivedProjects, err := vctx.wctx.WS.ReceivedProjects(ctx)
@@ -146,7 +146,7 @@ func (c *VerifyCmd) verifyPulledProjects(ctx context.Context, vctx *verifyContex
 }
 
 // verifyReceivedProject checks a single received project.
-func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyContext, received *local.ReceivedProject) error {
+func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyCtx, received *local.ReceivedProject) error {
 	snapshot := git.Hash(received.ProviderSnapshot)
 	project := registry.ProjectPath(received.Project)
 
@@ -183,7 +183,7 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyConte
 }
 
 // getProjectFiles retrieves files from both registry and local workspace.
-func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash) ([]registry.ProjectFile, []local.ProjectFile, error) {
+func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyCtx, project registry.ProjectPath, snapshot git.Hash) ([]registry.ProjectFile, []local.ProjectFile, error) {
 	regFiles, err := vctx.reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
 		Project:  project,
 		Snapshot: snapshot,
@@ -221,7 +221,7 @@ func buildFileSet(files []local.ProjectFile) map[string]bool {
 }
 
 // verifyLocalFile checks if a local file matches the registry.
-func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyContext, project registry.ProjectPath, snapshot git.Hash, f local.ProjectFile, regFileMap map[string]git.Hash) error {
+func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyCtx, project registry.ProjectPath, snapshot git.Hash, f local.ProjectFile, regFileMap map[string]git.Hash) error {
 	regHash, exists := regFileMap[f.Path]
 	if !exists {
 		logger.Log(ctx).Error().

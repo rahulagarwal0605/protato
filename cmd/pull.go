@@ -58,7 +58,7 @@ func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	return c.executePullContexts(ctx, wctx.WS, reg, snapshot, contexts)
+	return c.executePull(ctx, wctx.WS, reg, snapshot, contexts)
 }
 
 // resolveProjects determines which projects need to be pulled.
@@ -212,8 +212,8 @@ func (c *PullCmd) validateDeletions(ctx context.Context, pc pullCtx) error {
 	return nil
 }
 
-// executePullContexts executes all pull contexts.
-func (c *PullCmd) executePullContexts(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, contexts []pullCtx) error {
+// executePull executes all pull contexts.
+func (c *PullCmd) executePull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, contexts []pullCtx) error {
 	var totalChanged, totalDeleted int
 
 	for _, pc := range contexts {
