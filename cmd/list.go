@@ -13,7 +13,7 @@ import (
 // ListCmd lists available projects.
 type ListCmd struct {
 	Local   bool `help:"List local projects instead of registry" short:"l"`
-	Offline bool `help:"Don't refresh registry" name:"offline"`
+	Offline bool `help:"Don't refresh registry"`
 }
 
 // Run executes the list command.

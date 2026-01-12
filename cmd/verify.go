@@ -15,7 +15,7 @@ import (
 
 // VerifyCmd verifies workspace integrity.
 type VerifyCmd struct {
-	Offline bool `help:"Don't refresh registry" name:"offline"`
+	Offline bool `help:"Don't refresh registry"`
 }
 
 // verifyContext holds resources for verification.

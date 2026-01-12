@@ -15,11 +15,11 @@ import (
 type PullCmd struct {
 	Projects []string `arg:"" optional:"" help:"Projects to pull"`
 	Force    bool     `help:"Force pull even if files would be deleted" short:"f"`
-	NoDeps   bool     `help:"Don't pull dependencies" name:"no-deps"`
+	NoDeps   bool     `help:"Don't pull dependencies"`
 }
 
-// pullPlan represents the plan for pulling a project.
-type pullPlan struct {
+// pullCtx represents the context for pulling a project.
+type pullCtx struct {
 	project  registry.ProjectPath
 	files    []registry.ProjectFile
 	toDelete []string
@@ -53,12 +53,12 @@ func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return nil
 	}
 
-	plans, err := c.createPullPlans(ctx, wctx.WS, reg, snapshot, projectsToPull)
+	contexts, err := c.createPullContexts(ctx, wctx.WS, reg, snapshot, projectsToPull)
 	if err != nil {
 		return err
 	}
 
-	return c.executePullPlans(ctx, wctx.WS, reg, snapshot, plans)
+	return c.executePullContexts(ctx, wctx.WS, reg, snapshot, contexts)
 }
 
 // resolveProjects determines which projects need to be pulled.
@@ -139,44 +139,44 @@ func (c *PullCmd) filterOwnedProjects(projects []registry.ProjectPath, ownedPath
 	return filtered
 }
 
-// createPullPlans creates execution plans for each project.
-func (c *PullCmd) createPullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) ([]pullPlan, error) {
-	var plans []pullPlan
+// createPullContexts creates pull contexts for each project.
+func (c *PullCmd) createPullContexts(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) ([]pullCtx, error) {
+	var contexts []pullCtx
 
 	for _, project := range projects {
-		plan, err := c.createProjectPlan(ctx, ws, reg, snapshot, project)
+		pc, err := c.createProjectContext(ctx, ws, reg, snapshot, project)
 		if err != nil {
 			return nil, err
 		}
 
-		if err := c.validateDeletions(ctx, plan); err != nil {
+		if err := c.validateDeletions(ctx, pc); err != nil {
 			return nil, err
 		}
 
-		plans = append(plans, plan)
+		contexts = append(contexts, pc)
 	}
 
-	return plans, nil
+	return contexts, nil
 }
 
-// createProjectPlan creates a pull plan for a single project.
-func (c *PullCmd) createProjectPlan(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, project registry.ProjectPath) (pullPlan, error) {
+// createProjectContext creates a pull context for a single project.
+func (c *PullCmd) createProjectContext(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, project registry.ProjectPath) (pullCtx, error) {
 	filesRes, err := reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
 		Project:  project,
 		Snapshot: snapshot,
 	})
 	if err != nil {
-		return pullPlan{}, fmt.Errorf("list project files %s: %w", project, err)
+		return pullCtx{}, fmt.Errorf("list project files %s: %w", project, err)
 	}
 
 	localFiles, err := ws.ListVendorProjectFiles(local.ProjectPath(project))
 	if err != nil {
-		return pullPlan{}, fmt.Errorf("list local files %s: %w", project, err)
+		return pullCtx{}, fmt.Errorf("list local files %s: %w", project, err)
 	}
 
 	toDelete := c.findFilesToDelete(filesRes.Files, localFiles)
 
-	return pullPlan{
+	return pullCtx{
 		project:  project,
 		files:    filesRes.Files,
 		toDelete: toDelete,
@@ -201,23 +201,23 @@ func (c *PullCmd) findFilesToDelete(regFiles []registry.ProjectFile, localFiles 
 }
 
 // validateDeletions checks if deletions are allowed.
-func (c *PullCmd) validateDeletions(ctx context.Context, plan pullPlan) error {
-	if len(plan.toDelete) > 0 && !c.Force {
+func (c *PullCmd) validateDeletions(ctx context.Context, pc pullCtx) error {
+	if len(pc.toDelete) > 0 && !c.Force {
 		logger.Log(ctx).Error().
-			Str("project", string(plan.project)).
-			Int("count", len(plan.toDelete)).
+			Str("project", string(pc.project)).
+			Int("count", len(pc.toDelete)).
 			Msg("Would delete files. Use --force to proceed")
-		return fmt.Errorf("would delete %d files in %s", len(plan.toDelete), plan.project)
+		return fmt.Errorf("would delete %d files in %s", len(pc.toDelete), pc.project)
 	}
 	return nil
 }
 
-// executePullPlans executes all pull plans.
-func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plans []pullPlan) error {
+// executePullContexts executes all pull contexts.
+func (c *PullCmd) executePullContexts(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, contexts []pullCtx) error {
 	var totalChanged, totalDeleted int
 
-	for _, plan := range plans {
-		stats, err := c.executeProjectPull(ctx, ws, reg, snapshot, plan)
+	for _, pc := range contexts {
+		stats, err := c.executeProjectPull(ctx, ws, reg, snapshot, pc)
 		if err != nil {
 			return err
 		}
@@ -226,7 +226,7 @@ func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg
 	}
 
 	logger.Log(ctx).Info().
-		Int("projects", len(plans)).
+		Int("projects", len(contexts)).
 		Int("changed", totalChanged).
 		Int("deleted", totalDeleted).
 		Msg("Pull complete")
@@ -235,25 +235,25 @@ func (c *PullCmd) executePullPlans(ctx context.Context, ws *local.Workspace, reg
 }
 
 // executeProjectPull pulls a single project.
-func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, plan pullPlan) (*local.ReceiveStats, error) {
+func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, pc pullCtx) (*local.ReceiveStats, error) {
 	logger.Log(ctx).Info().
-		Str("project", string(plan.project)).
-		Int("files", len(plan.files)).
+		Str("project", string(pc.project)).
+		Int("files", len(pc.files)).
 		Msg("Pulling project")
 
 	recv, err := ws.ReceiveProject(&local.ReceiveProjectRequest{
-		Project:  local.ProjectPath(plan.project),
+		Project:  local.ProjectPath(pc.project),
 		Snapshot: snapshot,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("receive project: %w", err)
 	}
 
-	if err := c.pullFiles(ctx, reg, recv, plan.files); err != nil {
+	if err := c.pullFiles(ctx, reg, recv, pc.files); err != nil {
 		return nil, err
 	}
 
-	c.deleteFiles(ctx, recv, plan.toDelete)
+	c.deleteFiles(ctx, recv, pc.toDelete)
 
 	return recv.Finish()
 }

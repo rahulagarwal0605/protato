@@ -740,6 +740,11 @@ func (r *ProjectReceiver) DeleteFile(relPath string) error {
 
 // Finish completes the receive operation.
 func (r *ProjectReceiver) Finish() (*ReceiveStats, error) {
+	// Ensure project directory exists
+	if err := os.MkdirAll(r.projectRoot, 0755); err != nil {
+		return nil, fmt.Errorf("create project directory: %w", err)
+	}
+
 	// Write lock file
 	lockPath := filepath.Join(r.projectRoot, lockFileName)
 	if err := writeLockFile(lockPath, &LockFile{Snapshot: string(r.snapshot)}); err != nil {

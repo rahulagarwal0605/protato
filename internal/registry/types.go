@@ -82,6 +82,7 @@ type SetProjectRequest struct {
 type LocalProjectFile struct {
 	Path      string // Relative to project
 	LocalPath string // Absolute filesystem path
+	Content   []byte // Optional: if set, use this content instead of reading LocalPath
 }
 
 // SetProjectResponse contains the result of updating a project.

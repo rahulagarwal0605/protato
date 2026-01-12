@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -24,11 +26,11 @@ const (
 type PushCmd struct {
 	Retries    int           `help:"Number of retries on conflict" default:"5" env:"PROTATO_PUSH_RETRIES"`
 	RetryDelay time.Duration `help:"Delay between retries" default:"200ms" env:"PROTATO_PUSH_RETRY_DELAY"`
-	NoValidate bool          `help:"Skip proto validation" name:"no-validate"`
+	NoValidate bool          `help:"Skip proto validation"`
 }
 
-// pushContext holds the context for a push operation.
-type pushContext struct {
+// pushCtx holds the context for a push operation.
+type pushCtx struct {
 	wctx          *WorkspaceContext
 	reg           *registry.Cache
 	repoURL       string
@@ -39,7 +41,7 @@ type pushContext struct {
 
 // Run executes the push command.
 func (c *PushCmd) Run(globals *GlobalOptions, ctx context.Context) error {
-	pctx, err := c.preparePushContext(ctx, globals)
+	pctx, err := c.createPushContext(ctx, globals)
 	if err != nil {
 		return err
 	}
@@ -49,11 +51,11 @@ func (c *PushCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return nil
 	}
 
-	return c.pushWithRetries(ctx, pctx)
+	return c.executePush(ctx, pctx)
 }
 
-// preparePushContext initializes all resources needed for push.
-func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions) (*pushContext, error) {
+// createPushContext initializes all resources needed for push.
+func (c *PushCmd) createPushContext(ctx context.Context, globals *GlobalOptions) (*pushCtx, error) {
 	// Check registry URL first
 	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
@@ -87,7 +89,7 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 	}
 	author := &user
 
-	return &pushContext{
+	return &pushCtx{
 		wctx:          wctx,
 		reg:           reg,
 		repoURL:       repoURL,
@@ -97,8 +99,8 @@ func (c *PushCmd) preparePushContext(ctx context.Context, globals *GlobalOptions
 	}, nil
 }
 
-// pushWithRetries attempts to push with optimistic locking retries.
-func (c *PushCmd) pushWithRetries(ctx context.Context, pctx *pushContext) error {
+// executePush attempts to push with optimistic locking retries.
+func (c *PushCmd) executePush(ctx context.Context, pctx *pushCtx) error {
 	for attempt := 1; attempt <= c.Retries+1; attempt++ {
 		logger.Log(ctx).Debug().Int("attempt", attempt).Msg("Push attempt")
 
@@ -155,7 +157,7 @@ func (c *PushCmd) isRetryableError(err error) bool {
 }
 
 // attemptPush performs a single push attempt.
-func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext) error {
+func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushCtx) error {
 	if err := pctx.reg.Refresh(ctx); err != nil {
 		return fmt.Errorf("refresh registry: %w", err)
 	}
@@ -186,7 +188,7 @@ func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushContext) error {
 }
 
 // checkOwnershipClaims verifies all projects can be pushed.
-func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, snapshot git.Hash) error {
+func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushCtx, snapshot git.Hash) error {
 	for _, project := range pctx.ownedProjects {
 		registryPath, err := pctx.wctx.WS.RegistryProjectPath(project)
 		if err != nil {
@@ -200,7 +202,7 @@ func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushContext, s
 }
 
 // updateProjects updates all owned projects in the registry.
-func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapshot git.Hash) (git.Hash, []registry.ProjectPath, error) {
+func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushCtx, snapshot git.Hash) (git.Hash, []registry.ProjectPath, error) {
 	var finalSnapshot git.Hash
 	var registryProjects []registry.ProjectPath
 
@@ -229,18 +231,57 @@ func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushContext, snapsho
 }
 
 // updateSingleProject updates a single project in the registry.
-func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushContext, localProject local.ProjectPath, registryPath local.ProjectPath, snapshot git.Hash) (git.Hash, error) {
+func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushCtx, localProject local.ProjectPath, registryPath local.ProjectPath, snapshot git.Hash) (git.Hash, error) {
 	files, err := pctx.wctx.WS.ListOwnedProjectFiles(localProject)
 	if err != nil {
 		return "", fmt.Errorf("list files %s: %w", localProject, err)
 	}
 
+	// Get ownedDir and service name for import transformation
+	ownedDir, _ := pctx.wctx.WS.OwnedDirName()
+	serviceName := pctx.wctx.WS.ServiceName()
+
+	// Get pulled project prefixes (service names of pulled projects)
+	// These imports should just have ownedDir stripped, not get our service prefix
+	var pulledPrefixes []string
+	if received, err := pctx.wctx.WS.ReceivedProjects(ctx); err == nil {
+		seen := make(map[string]bool)
+		for _, r := range received {
+			// Extract the service name (first part) from pulled project path
+			// e.g., "lcs-svc/common" -> "lcs-svc"
+			parts := strings.SplitN(string(r.Project), "/", 2)
+			if len(parts) > 0 && !seen[parts[0]] {
+				pulledPrefixes = append(pulledPrefixes, parts[0])
+				seen[parts[0]] = true
+			}
+		}
+	}
+
 	regFiles := make([]registry.LocalProjectFile, len(files))
 	for i, f := range files {
-		regFiles[i] = registry.LocalProjectFile{
+		regFile := registry.LocalProjectFile{
 			Path:      f.Path,
 			LocalPath: f.AbsolutePath,
 		}
+
+		// Transform imports in proto files
+		// Owned imports: ownedDir/common/... -> serviceName/common/...
+		// Pulled imports: ownedDir/lcs-svc/... -> lcs-svc/... (just strip ownedDir)
+		// For ownedDir="" (root): buf/validate/... -> serviceName/buf/validate/...
+		if strings.HasSuffix(f.Path, ".proto") && serviceName != "" {
+			content, err := os.ReadFile(f.AbsolutePath)
+			if err == nil {
+				transformed := protoc.TransformImportsWithPulled(content, ownedDir, serviceName, pulledPrefixes)
+				if !bytes.Equal(content, transformed) {
+					regFile.Content = transformed
+					logger.Log(ctx).Debug().Str("file", f.Path).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("Transformed imports")
+				} else {
+					logger.Log(ctx).Debug().Str("file", f.Path).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("No imports transformed")
+				}
+			}
+		}
+
+		regFiles[i] = regFile
 	}
 
 	res, err := pctx.reg.SetProject(ctx, &registry.SetProjectRequest{
@@ -261,7 +302,7 @@ func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushContext, lo
 }
 
 // validateIfEnabled runs proto validation if enabled.
-func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snapshot git.Hash, projects []registry.ProjectPath) error {
+func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot git.Hash, projects []registry.ProjectPath) error {
 	if c.NoValidate {
 		return nil
 	}
@@ -275,8 +316,14 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 
 	workspaceRoot := pctx.wctx.WS.Root()
 
+	// Get vendor directory for pulled dependencies
+	vendorDir, err := pctx.wctx.WS.VendorDir()
+	if err != nil {
+		vendorDir = "" // No vendor dir configured, that's OK
+	}
+
 	logger.Log(ctx).Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, workspaceRoot); err != nil {
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, vendorDir, workspaceRoot); err != nil {
 		return fmt.Errorf("%s: %w", errValidationFailed, err)
 	}
 
@@ -284,7 +331,7 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushContext, snap
 }
 
 // pushToRemote pushes the final snapshot to the remote registry.
-func (c *PushCmd) pushToRemote(ctx context.Context, pctx *pushContext, snapshot git.Hash) error {
+func (c *PushCmd) pushToRemote(ctx context.Context, pctx *pushCtx, snapshot git.Hash) error {
 	logger.Log(ctx).Info().Str("snapshot", snapshot.Short()).Msg("Pushing to registry")
 
 	if err := pctx.reg.Push(ctx, snapshot); err != nil {

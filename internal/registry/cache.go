@@ -402,15 +402,27 @@ func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []Lo
 
 	// Write files
 	for _, file := range files {
-		f, err := os.Open(file.LocalPath)
-		if err != nil {
-			return nil, fmt.Errorf("open file %s: %w", file.LocalPath, err)
-		}
+		var hash git.Hash
+		var err error
 
-		hash, err := r.repo.WriteObject(ctx, f, git.WriteObjectOptions{})
-		f.Close()
-		if err != nil {
-			return nil, fmt.Errorf("write object: %w", err)
+		if file.Content != nil {
+			// Use provided content (e.g., transformed imports)
+			hash, err = r.repo.WriteObject(ctx, bytes.NewReader(file.Content), git.WriteObjectOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("write transformed object: %w", err)
+			}
+		} else {
+			// Read from local file
+			f, err := os.Open(file.LocalPath)
+			if err != nil {
+				return nil, fmt.Errorf("open file %s: %w", file.LocalPath, err)
+			}
+
+			hash, err = r.repo.WriteObject(ctx, f, git.WriteObjectOptions{})
+			f.Close()
+			if err != nil {
+				return nil, fmt.Errorf("write object: %w", err)
+			}
 		}
 
 		upserts = append(upserts, git.TreeUpsert{
