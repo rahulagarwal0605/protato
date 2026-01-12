@@ -61,9 +61,14 @@ func (c *Config) OwnedDir() (string, error) {
 }
 
 // VendorDir returns the vendor directory.
+// If the configured directory is ".", returns "" (empty string) to represent root.
 func (c *Config) VendorDir() (string, error) {
 	if c.Directories.Vendor == "" {
 		return "", ErrVendorDirNotSet
+	}
+	// Treat "." as root directory (empty string)
+	if c.Directories.Vendor == "." {
+		return "", nil
 	}
 	return c.Directories.Vendor, nil
 }

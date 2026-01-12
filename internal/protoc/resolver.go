@@ -23,6 +23,12 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
+const (
+	// googleProtobufPrefix is the import path prefix for standard protobuf types
+	// These are provided by protocompile and should not be resolved from the registry
+	googleProtobufPrefix = "google/protobuf/"
+)
+
 // RegistryResolver resolves proto imports from the registry.
 type RegistryResolver struct {
 	cache    *registry.Cache
@@ -53,7 +59,6 @@ func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot gi
 		snapshot:  snapshot,
 		projects:  make(map[registry.ProjectPath]struct{}),
 		fileCache: make(map[string][]byte),
-		// importPrefix is set by configureResolver based on ownedDir
 	}
 }
 
@@ -68,8 +73,6 @@ func (r *RegistryResolver) SetImportPrefix(prefix string) {
 // If cacheAtRegistryPath is true, files are cached at both registry paths and import paths.
 // This is needed for dependency discovery where files are compiled using registry paths.
 func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry.ProjectPath, cacheAtRegistryPath bool) error {
-	log := logger.Log(ctx)
-
 	for _, project := range projects {
 		// List all files in the project
 		filesRes, err := r.cache.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
@@ -77,7 +80,7 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 			Snapshot: r.snapshot,
 		})
 		if err != nil {
-			log.Warn().Err(err).Str("project", string(project)).Msg("Failed to list project files")
+			logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list project files")
 			continue
 		}
 
@@ -97,7 +100,7 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 				Path:     f.Path,
 				Hash:     f.Hash,
 			}, &buf); err != nil {
-				log.Warn().Err(err).Str("file", registryPath).Msg("Failed to read file")
+				logger.Log(ctx).Warn().Err(err).Str("file", registryPath).Msg("Failed to read file")
 				continue
 			}
 
@@ -110,7 +113,7 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 				subPath := strings.TrimPrefix(registryPath, r.servicePrefix+"/")
 
 				// Skip google/protobuf - those come from standard imports
-				if strings.Contains(subPath, "google/protobuf/") {
+				if strings.Contains(subPath, googleProtobufPrefix) {
 					r.projects[project] = struct{}{}
 					r.mu.Unlock()
 					continue
@@ -136,9 +139,9 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 				// Keep transformed imports for registry path (matches registry import paths)
 				if cacheAtRegistryPath {
 					r.fileCache[registryPath] = content // Keep original content with transformed imports
-					log.Debug().Str("registryPath", registryPath).Str("cachePath", cachePath).Msg("Cached file at both paths")
+					logger.Log(ctx).Debug().Str("registryPath", registryPath).Str("cachePath", cachePath).Msg("Cached file at both paths")
 				} else {
-					log.Debug().Str("registryPath", registryPath).Str("cachePath", cachePath).Msg("Cached file")
+					logger.Log(ctx).Debug().Str("registryPath", registryPath).Str("cachePath", cachePath).Msg("Cached file")
 				}
 			} else {
 				// Fallback: cache at registry path for projects without service prefix
@@ -151,7 +154,7 @@ func (r *RegistryResolver) PreloadFiles(ctx context.Context, projects []registry
 	}
 
 	r.preloaded = true
-	log.Debug().Int("files", len(r.fileCache)).Msg("Pre-loaded proto files into memory")
+	logger.Log(ctx).Debug().Int("files", len(r.fileCache)).Msg("Pre-loaded proto files into memory")
 	return nil
 }
 
@@ -164,9 +167,8 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 	}
 
 	ctx := context.Background()
-	log := logger.Log(ctx)
 
-	log.Debug().
+	logger.Log(ctx).Debug().
 		Str("filePath", filePath).
 		Bool("preloaded", r.preloaded).
 		Msg("FindFileByPath: called")
@@ -182,13 +184,13 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	if ok {
 		if cached == nil {
-			log.Error().
+			logger.Log(ctx).Error().
 				Str("filePath", filePath).
 				Str("mappedPath", mappedPath).
 				Msg("FindFileByPath: cached content is nil")
 			return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 		}
-		log.Debug().
+		logger.Log(ctx).Debug().
 			Str("filePath", filePath).
 			Str("mappedPath", mappedPath).
 			Int("size", len(cached)).
@@ -206,12 +208,12 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 		if ok {
 			if cached == nil {
-				log.Error().
+				logger.Log(ctx).Error().
 					Str("filePath", filePath).
 					Msg("FindFileByPath: cached content is nil (original)")
 				return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 			}
-			log.Debug().
+			logger.Log(ctx).Debug().
 				Str("filePath", filePath).
 				Int("size", len(cached)).
 				Msg("FindFileByPath: found in cache (original)")
@@ -223,7 +225,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	// If preloaded, file not found in cache means it doesn't exist
 	if r.preloaded {
-		log.Debug().
+		logger.Log(ctx).Debug().
 			Str("filePath", filePath).
 			Str("mappedPath", mappedPath).
 			Msg("FindFileByPath: not found (preloaded mode)")
@@ -231,7 +233,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 	}
 
 	// Debug: log when falling back to git
-	log.Debug().
+	logger.Log(ctx).Debug().
 		Str("filePath", filePath).
 		Str("mappedPath", mappedPath).
 		Bool("preloaded", r.preloaded).
@@ -254,23 +256,21 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 		return protocompile.SearchResult{}, fmt.Errorf("cache is nil")
 	}
 
-	log := logger.Log(ctx)
-
 	// Use original path for project lookup (don't map - we need the full registry path)
 	// e.g., "lcs-svc/vendors/buf/validate/validate.proto" should lookup project "lcs-svc/vendors/buf/validate"
-	log.Debug().Str("filePath", filePath).Msg("loadFileFromGit: looking up project")
+	logger.Log(ctx).Debug().Str("filePath", filePath).Msg("loadFileFromGit: looking up project")
 
 	res, err := r.cache.LookupProject(ctx, &registry.LookupProjectRequest{
 		Path:     filePath,
 		Snapshot: r.snapshot,
 	})
 	if err != nil {
-		log.Debug().Err(err).Str("filePath", filePath).Msg("loadFileFromGit: lookup failed")
+		logger.Log(ctx).Debug().Err(err).Str("filePath", filePath).Msg("loadFileFromGit: lookup failed")
 		return protocompile.SearchResult{}, err
 	}
 
 	if res == nil || res.Project == nil {
-		log.Debug().Str("filePath", filePath).Msg("loadFileFromGit: project not found")
+		logger.Log(ctx).Debug().Str("filePath", filePath).Msg("loadFileFromGit: project not found")
 		return protocompile.SearchResult{}, registry.ErrNotFound
 	}
 
@@ -278,7 +278,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 	r.mu.Lock()
 	r.projects[res.Project.Path] = struct{}{}
 	r.mu.Unlock()
-	log.Debug().Str("filePath", filePath).Str("project", string(res.Project.Path)).Msg("loadFileFromGit: discovered project")
+	logger.Log(ctx).Debug().Str("filePath", filePath).Str("project", string(res.Project.Path)).Msg("loadFileFromGit: discovered project")
 
 	// Get relative path within project
 	relPath := strings.TrimPrefix(filePath, string(res.Project.Path)+"/")
@@ -406,7 +406,7 @@ func (r *RegistryResolver) mapImportPath(importPath string) string {
 	}
 
 	// Skip standard imports (google/protobuf) - they're provided by protocompile
-	if strings.HasPrefix(importPath, "google/protobuf/") {
+	if strings.HasPrefix(importPath, googleProtobufPrefix) {
 		return importPath
 	}
 
@@ -592,7 +592,7 @@ func DiscoverDependencies(
 			logger.Log(ctx).Debug().Str("file", protoFile).Str("import", imp).Msg("Found import")
 
 			// Skip standard imports
-			if strings.HasPrefix(imp, "google/protobuf/") {
+			if strings.HasPrefix(imp, googleProtobufPrefix) {
 				continue
 			}
 
@@ -721,38 +721,38 @@ func findAllBufYamlWithDeps(workspaceRoot string) []string {
 
 // exportBufDependencies runs `buf export` to get all proto files including BSR dependencies.
 // Returns the path to the exported directory, or empty string if buf is not available or fails.
-func exportBufDependencies(ctx context.Context, bufDir string, log *zerolog.Logger) string {
+func exportBufDependencies(ctx context.Context, bufDir string) string {
 	// Check if buf CLI is available
 	if _, err := exec.LookPath("buf"); err != nil {
-		log.Debug().Msg("buf CLI not found, skipping BSR dependency resolution")
+		logger.Log(ctx).Debug().Msg("buf CLI not found, skipping BSR dependency resolution")
 		return ""
 	}
 
 	// Create temp directory for export
 	exportDir, err := os.MkdirTemp("", "protato-buf-export-*")
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to create temp directory for buf export")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to create temp directory for buf export")
 		return ""
 	}
 
 	// Run buf export
-	log.Debug().Str("dir", bufDir).Msg("Exporting buf dependencies")
+	logger.Log(ctx).Debug().Str("dir", bufDir).Msg("Exporting buf dependencies")
 	cmd := exec.CommandContext(ctx, "buf", "export", ".", "-o", exportDir)
 	cmd.Dir = bufDir
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Debug().Err(err).Str("output", string(output)).Msg("buf export failed, continuing without BSR deps")
+		logger.Log(ctx).Debug().Err(err).Str("output", string(output)).Msg("buf export failed, continuing without BSR deps")
 		os.RemoveAll(exportDir)
 		return ""
 	}
 
-	log.Debug().Str("exportDir", exportDir).Msg("Successfully exported buf dependencies")
+	logger.Log(ctx).Debug().Str("exportDir", exportDir).Msg("Successfully exported buf dependencies")
 	return exportDir
 }
 
 // loadExportedFiles loads proto files from the buf export directory into the resolver cache.
-func (r *RegistryResolver) loadExportedFiles(exportDir string, log *zerolog.Logger) error {
+func (r *RegistryResolver) loadExportedFiles(ctx context.Context, exportDir string) error {
 	count := 0
 	err := filepath.WalkDir(exportDir, func(filePath string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -774,12 +774,12 @@ func (r *RegistryResolver) loadExportedFiles(exportDir string, log *zerolog.Logg
 		// Skip if we already have this file at exact path OR at import path
 		// We now cache owned files at import paths (e.g., "buf/validate/..." not "druid/buf/validate/...")
 		if _, exists := r.fileCache[importPath]; exists {
-			log.Debug().Str("path", importPath).Msg("Skipping BSR file (already cached)")
+			logger.Log(ctx).Debug().Str("path", importPath).Msg("Skipping BSR file (already cached)")
 			r.mu.Unlock()
 			return nil
 		}
 		r.mu.Unlock()
-		log.Debug().Str("path", importPath).Msg("Loading BSR file")
+		logger.Log(ctx).Debug().Str("path", importPath).Msg("Loading BSR file")
 
 		// Read file content
 		content, err := os.ReadFile(filePath)
@@ -797,15 +797,15 @@ func (r *RegistryResolver) loadExportedFiles(exportDir string, log *zerolog.Logg
 	})
 
 	if err != nil {
-		log.Warn().Err(err).Msg("Error walking buf export directory")
+		logger.Log(ctx).Warn().Err(err).Msg("Error walking buf export directory")
 	}
-	log.Debug().Int("files", count).Msg("Loaded buf dependencies into cache")
+	logger.Log(ctx).Debug().Int("files", count).Msg("Loaded buf dependencies into cache")
 	return nil
 }
 
 // loadVendorFiles loads proto files from the local vendor directory into the resolver cache.
 // This allows owned protos to import pulled dependencies during validation.
-func (r *RegistryResolver) loadVendorFiles(vendorDir string, log *zerolog.Logger) error {
+func (r *RegistryResolver) loadVendorFiles(ctx context.Context, vendorDir string) error {
 	if vendorDir == "" {
 		return nil
 	}
@@ -850,10 +850,10 @@ func (r *RegistryResolver) loadVendorFiles(vendorDir string, log *zerolog.Logger
 	})
 
 	if err != nil {
-		log.Warn().Err(err).Msg("Error walking vendor directory")
+		logger.Log(ctx).Warn().Err(err).Msg("Error walking vendor directory")
 	}
 	if count > 0 {
-		log.Debug().Int("files", count).Str("dir", vendorDir).Msg("Loaded vendor dependencies into cache")
+		logger.Log(ctx).Debug().Int("files", count).Str("dir", vendorDir).Msg("Loaded vendor dependencies into cache")
 	}
 	return nil
 }
@@ -862,6 +862,7 @@ func (r *RegistryResolver) loadVendorFiles(vendorDir string, log *zerolog.Logger
 // ownedDir is the local directory prefix used in proto imports (e.g., "proto").
 // workspaceRoot is the root directory of the workspace (for finding buf.yaml).
 // vendorDir is the directory containing pulled dependencies.
+// serviceName is the service name from workspace configuration (e.g., "lcs-svc").
 func ValidateProtos(
 	ctx context.Context,
 	cache *registry.Cache,
@@ -870,28 +871,27 @@ func ValidateProtos(
 	ownedDir string,
 	vendorDir string,
 	workspaceRoot string,
+	serviceName string,
 ) error {
-	log := logger.Log(ctx)
-
 	resolver := NewRegistryResolver(ctx, cache, snapshot)
-	configureResolver(resolver, projects, ownedDir, log)
+	configureResolver(resolver, ownedDir, serviceName)
 
-	if err := preloadProtoFiles(ctx, resolver, projects, log); err != nil {
+	if err := preloadProtoFiles(ctx, resolver, projects); err != nil {
 		return err
 	}
 
 	// Load pulled dependencies from vendor directory
-	if err := resolver.loadVendorFiles(vendorDir, log); err != nil {
-		log.Warn().Err(err).Msg("Failed to load vendor dependencies")
+	if err := resolver.loadVendorFiles(ctx, vendorDir); err != nil {
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to load vendor dependencies")
 	}
 
 	// Try to load BSR dependencies using buf export for all buf.yaml files
 	if workspaceRoot != "" {
 		bufDirs := findAllBufYamlWithDeps(workspaceRoot)
 		for _, bufDir := range bufDirs {
-			if exportDir := exportBufDependencies(ctx, bufDir, log); exportDir != "" {
-				if err := resolver.loadExportedFiles(exportDir, log); err != nil {
-					log.Warn().Err(err).Msg("Failed to load buf dependencies")
+			if exportDir := exportBufDependencies(ctx, bufDir); exportDir != "" {
+				if err := resolver.loadExportedFiles(ctx, exportDir); err != nil {
+					logger.Log(ctx).Warn().Err(err).Msg("Failed to load buf dependencies")
 				}
 				os.RemoveAll(exportDir) // Cleanup after loading
 			}
@@ -903,33 +903,24 @@ func ValidateProtos(
 		return nil
 	}
 
-	return compileProtoFiles(ctx, resolver, protoFiles, log)
+	return compileProtoFiles(ctx, resolver, protoFiles)
 }
 
 // configureResolver sets up the resolver with import and service prefixes.
-func configureResolver(resolver *RegistryResolver, projects []registry.ProjectPath, ownedDir string, log *zerolog.Logger) {
+func configureResolver(resolver *RegistryResolver, ownedDir, serviceName string) {
 	// Always set import prefix - empty string means root directory (ownedDir: ".")
 	resolver.SetImportPrefix(ownedDir)
 
-	if len(projects) == 0 {
-		return
-	}
-
-	projectPath := string(projects[0])
-	idx := strings.Index(projectPath, "/")
-	if idx > 0 {
-		prefix := projectPath[:idx]
-		resolver.SetServicePrefix(prefix)
-		log.Debug().Str("prefix", prefix).Msg("Using service prefix for import mapping")
-	}
+	// Set service prefix from workspace configuration
+	resolver.SetServicePrefix(serviceName)
 }
 
 // preloadProtoFiles pre-loads all proto files into memory to avoid concurrent git access.
-func preloadProtoFiles(ctx context.Context, resolver *RegistryResolver, projects []registry.ProjectPath, log *zerolog.Logger) error {
-	log.Debug().Int("projects", len(projects)).Msg("Pre-loading proto files into memory")
+func preloadProtoFiles(ctx context.Context, resolver *RegistryResolver, projects []registry.ProjectPath) error {
+	logger.Log(ctx).Debug().Int("projects", len(projects)).Msg("Pre-loading proto files into memory")
 	// Pass cacheAtRegistryPath=false for validation - only cache at import paths
 	if err := resolver.PreloadFiles(ctx, projects, false); err != nil {
-		log.Warn().Err(err).Msg("Failed to preload files, skipping validation")
+		logger.Log(ctx).Warn().Err(err).Msg("Failed to preload files, skipping validation")
 		return nil
 	}
 	return nil
@@ -1001,15 +992,15 @@ func buildImportPath(projectStr, filePath string, resolver *RegistryResolver) st
 }
 
 // compileProtoFiles compiles the proto files and handles errors.
-func compileProtoFiles(ctx context.Context, resolver *RegistryResolver, protoFiles []string, log *zerolog.Logger) error {
-	rep := &LogReporter{Log: log}
+func compileProtoFiles(ctx context.Context, resolver *RegistryResolver, protoFiles []string) error {
+	rep := &LogReporter{Log: logger.Log(ctx)}
 
 	compiler := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(resolver),
 		Reporter: rep,
 	}
 
-	log.Info().Int("files", len(protoFiles)).Msg("Validating proto files")
+	logger.Log(ctx).Info().Int("files", len(protoFiles)).Msg("Validating proto files")
 
 	_, err := compiler.Compile(ctx, protoFiles...)
 	if rep.Failed() {
@@ -1017,18 +1008,18 @@ func compileProtoFiles(ctx context.Context, resolver *RegistryResolver, protoFil
 	}
 
 	if err != nil {
-		return handleCompileError(err, log)
+		return handleCompileError(ctx, err)
 	}
 
-	log.Info().Msg("Proto validation completed successfully")
+	logger.Log(ctx).Info().Msg("Proto validation completed successfully")
 	return nil
 }
 
 // handleCompileError handles compilation errors, including panic recovery.
-func handleCompileError(err error, log *zerolog.Logger) error {
+func handleCompileError(ctx context.Context, err error) error {
 	errStr := err.Error()
 	if strings.Contains(errStr, "panic") {
-		log.Warn().Err(err).Msg("Proto validation encountered internal error, skipping")
+		logger.Log(ctx).Warn().Err(err).Msg("Proto validation encountered internal error, skipping")
 		return nil
 	}
 	return &CompileError{Message: err.Error()}
@@ -1108,7 +1099,7 @@ func transformImportLine(line, ownedDir, servicePrefix string, pulledPrefixes []
 	importPath := trimmed[startIdx:endIdx]
 
 	// Skip standard imports (google/protobuf) - they're provided by protocompile
-	if strings.HasPrefix(importPath, "google/protobuf/") {
+	if strings.HasPrefix(importPath, googleProtobufPrefix) {
 		return line
 	}
 
@@ -1185,7 +1176,7 @@ func extractImportsFromContent(content []byte) []string {
 		if startIdx > 0 && endIdx > 0 {
 			importPath := trimmed[startIdx:endIdx]
 			// Skip standard imports
-			if !strings.HasPrefix(importPath, "google/protobuf/") {
+			if !strings.HasPrefix(importPath, googleProtobufPrefix) {
 				imports = append(imports, importPath)
 			}
 		}

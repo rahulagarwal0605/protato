@@ -20,6 +20,7 @@ const (
 	errValidationFailed = "validation failed"
 	errProjectClaim     = "project claim"
 	errOwnership        = "ownership"
+	protoFileExt        = ".proto"
 )
 
 // PushCmd publishes owned projects to registry.
@@ -237,52 +238,10 @@ func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushCtx, localP
 		return "", fmt.Errorf("list files %s: %w", localProject, err)
 	}
 
-	// Get ownedDir and service name for import transformation
 	ownedDir, _ := pctx.wctx.WS.OwnedDirName()
 	serviceName := pctx.wctx.WS.ServiceName()
-
-	// Get pulled project prefixes (service names of pulled projects)
-	// These imports should just have ownedDir stripped, not get our service prefix
-	var pulledPrefixes []string
-	if received, err := pctx.wctx.WS.ReceivedProjects(ctx); err == nil {
-		seen := make(map[string]bool)
-		for _, r := range received {
-			// Extract the service name (first part) from pulled project path
-			// e.g., "lcs-svc/common" -> "lcs-svc"
-			parts := strings.SplitN(string(r.Project), "/", 2)
-			if len(parts) > 0 && !seen[parts[0]] {
-				pulledPrefixes = append(pulledPrefixes, parts[0])
-				seen[parts[0]] = true
-			}
-		}
-	}
-
-	regFiles := make([]registry.LocalProjectFile, len(files))
-	for i, f := range files {
-		regFile := registry.LocalProjectFile{
-			Path:      f.Path,
-			LocalPath: f.AbsolutePath,
-		}
-
-		// Transform imports in proto files
-		// Owned imports: ownedDir/common/... -> serviceName/common/...
-		// Pulled imports: ownedDir/lcs-svc/... -> lcs-svc/... (just strip ownedDir)
-		// For ownedDir="" (root): buf/validate/... -> serviceName/buf/validate/...
-		if strings.HasSuffix(f.Path, ".proto") && serviceName != "" {
-			content, err := os.ReadFile(f.AbsolutePath)
-			if err == nil {
-				transformed := protoc.TransformImportsWithPulled(content, ownedDir, serviceName, pulledPrefixes)
-				if !bytes.Equal(content, transformed) {
-					regFile.Content = transformed
-					logger.Log(ctx).Debug().Str("file", f.Path).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("Transformed imports")
-				} else {
-					logger.Log(ctx).Debug().Str("file", f.Path).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("No imports transformed")
-				}
-			}
-		}
-
-		regFiles[i] = regFile
-	}
+	pulledPrefixes := c.getPulledPrefixes(ctx, pctx)
+	regFiles := c.prepareRegistryFiles(ctx, files, ownedDir, serviceName, pulledPrefixes)
 
 	res, err := pctx.reg.SetProject(ctx, &registry.SetProjectRequest{
 		Project: &registry.Project{
@@ -301,6 +260,66 @@ func (c *PushCmd) updateSingleProject(ctx context.Context, pctx *pushCtx, localP
 	return res.Snapshot, nil
 }
 
+// getPulledPrefixes extracts service name prefixes from pulled projects.
+// These imports should just have ownedDir stripped, not get our service prefix.
+func (c *PushCmd) getPulledPrefixes(ctx context.Context, pctx *pushCtx) []string {
+	received, err := pctx.wctx.WS.ReceivedProjects(ctx)
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var pulledPrefixes []string
+	for _, r := range received {
+		// Extract the service name (first part) from pulled project path
+		// e.g., "lcs-svc/common" -> "lcs-svc"
+		parts := strings.SplitN(string(r.Project), "/", 2)
+		if len(parts) > 0 && !seen[parts[0]] {
+			pulledPrefixes = append(pulledPrefixes, parts[0])
+			seen[parts[0]] = true
+		}
+	}
+	return pulledPrefixes
+}
+
+// prepareRegistryFiles prepares registry files with transformed imports.
+func (c *PushCmd) prepareRegistryFiles(ctx context.Context, files []local.ProjectFile, ownedDir, serviceName string, pulledPrefixes []string) []registry.LocalProjectFile {
+	regFiles := make([]registry.LocalProjectFile, len(files))
+	for i, f := range files {
+		regFile := registry.LocalProjectFile{
+			Path:      f.Path,
+			LocalPath: f.AbsolutePath,
+		}
+
+		if strings.HasSuffix(f.Path, protoFileExt) && serviceName != "" {
+			transformed := c.transformProtoFile(ctx, f.AbsolutePath, f.Path, ownedDir, serviceName, pulledPrefixes)
+			if transformed != nil {
+				regFile.Content = transformed
+			}
+		}
+
+		regFiles[i] = regFile
+	}
+	return regFiles
+}
+
+// transformProtoFile transforms imports in a proto file and returns the transformed content if changed.
+func (c *PushCmd) transformProtoFile(ctx context.Context, filePath, fileName, ownedDir, serviceName string, pulledPrefixes []string) []byte {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+
+	transformed := protoc.TransformImportsWithPulled(content, ownedDir, serviceName, pulledPrefixes)
+	if !bytes.Equal(content, transformed) {
+		logger.Log(ctx).Debug().Str("file", fileName).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("Transformed imports")
+		return transformed
+	}
+
+	logger.Log(ctx).Debug().Str("file", fileName).Str("ownedDir", ownedDir).Str("serviceName", serviceName).Msg("No imports transformed")
+	return nil
+}
+
 // validateIfEnabled runs proto validation if enabled.
 func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot git.Hash, projects []registry.ProjectPath) error {
 	if c.NoValidate {
@@ -315,6 +334,7 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot
 	}
 
 	workspaceRoot := pctx.wctx.WS.Root()
+	serviceName := pctx.wctx.WS.ServiceName()
 
 	// Get vendor directory for pulled dependencies
 	vendorDir, err := pctx.wctx.WS.VendorDir()
@@ -323,7 +343,7 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot
 	}
 
 	logger.Log(ctx).Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, vendorDir, workspaceRoot); err != nil {
+	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, vendorDir, workspaceRoot, serviceName); err != nil {
 		return fmt.Errorf("%s: %w", errValidationFailed, err)
 	}
 
