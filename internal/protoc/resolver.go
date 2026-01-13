@@ -18,23 +18,17 @@ import (
 	"github.com/bufbuild/protocompile/reporter"
 	"github.com/rs/zerolog"
 
+	"github.com/rahulagarwal0605/protato/internal/constants"
+	"github.com/rahulagarwal0605/protato/internal/errors"
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
-const (
-	// googleProtobufPrefix is the import path prefix for standard protobuf types
-	// These are provided by protocompile and should not be resolved from the registry
-	googleProtobufPrefix = "google/protobuf/"
-	// importKeyword is the "import " keyword used in proto files
-	importKeyword = "import "
-)
-
 // isGoogleProtobufImport checks if an import path is a standard google/protobuf import.
 func isGoogleProtobufImport(importPath string) bool {
-	return strings.HasPrefix(importPath, googleProtobufPrefix)
+	return strings.HasPrefix(importPath, constants.GoogleProtobufPrefix)
 }
 
 // registerProject registers a project as discovered (thread-safe).
@@ -59,9 +53,18 @@ func (r *RegistryResolver) cacheFile(path string, content []byte) {
 	r.mu.Unlock()
 }
 
+// RegistryResolverInterface defines the interface for proto import resolution.
+type RegistryResolverInterface interface {
+	SetImportPrefix(prefix string)
+	PreloadFiles(ctx context.Context, projects []registry.ProjectPath, cacheAtRegistryPath bool) error
+	FindFileByPath(filePath string) (protocompile.SearchResult, error)
+	SetServicePrefix(prefix string)
+	DiscoveredProjects() []registry.ProjectPath
+}
+
 // RegistryResolver resolves proto imports from the registry.
 type RegistryResolver struct {
-	cache    *registry.Cache
+	cache    registry.CacheInterface
 	snapshot git.Hash
 
 	mu       sync.Mutex
@@ -83,7 +86,7 @@ type RegistryResolver struct {
 }
 
 // NewRegistryResolver creates a new registry resolver.
-func NewRegistryResolver(ctx context.Context, cache *registry.Cache, snapshot git.Hash) *RegistryResolver {
+func NewRegistryResolver(ctx context.Context, cache registry.CacheInterface, snapshot git.Hash) *RegistryResolver {
 	return &RegistryResolver{
 		cache:     cache,
 		snapshot:  snapshot,
@@ -169,7 +172,7 @@ func (r *RegistryResolver) cacheFileWithServicePrefix(ctx context.Context, regis
 	subPath := utils.TrimServicePrefix(registryPath, r.servicePrefix)
 
 	// Skip google/protobuf - those come from standard imports
-	if strings.Contains(subPath, googleProtobufPrefix) {
+	if strings.Contains(subPath, constants.GoogleProtobufPrefix) {
 		return
 	}
 
@@ -229,7 +232,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	// If preloaded, file not found in cache means it doesn't exist
 	if r.preloaded {
-		return protocompile.SearchResult{}, registry.ErrNotFound
+		return protocompile.SearchResult{}, errors.ErrNotFound
 	}
 
 	// Fallback to loading from git (only used if not preloaded)
@@ -264,7 +267,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 
 	if res == nil || res.Project == nil {
 		logger.Log(ctx).Debug().Str("filePath", filePath).Msg("loadFileFromGit: project not found")
-		return protocompile.SearchResult{}, registry.ErrNotFound
+		return protocompile.SearchResult{}, errors.ErrNotFound
 	}
 
 	// Record discovered project
@@ -284,7 +287,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 	}
 
 	if filesRes == nil {
-		return protocompile.SearchResult{}, registry.ErrNotFound
+		return protocompile.SearchResult{}, errors.ErrNotFound
 	}
 
 	// Find the file
@@ -296,7 +299,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 		}
 	}
 	if fileHash == "" {
-		return protocompile.SearchResult{}, registry.ErrNotFound
+		return protocompile.SearchResult{}, errors.ErrNotFound
 	}
 
 	// Read file content
@@ -431,7 +434,7 @@ func (r *LogReporter) Failed() bool {
 // DiscoverDependencies discovers all transitive dependencies for the given proto files.
 func DiscoverDependencies(
 	ctx context.Context,
-	cache *registry.Cache,
+	cache registry.CacheInterface,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
 ) ([]registry.ProjectPath, error) {
@@ -466,7 +469,7 @@ func setupServicePrefixForDiscovery(resolver *RegistryResolver, projects []regis
 // buildProtoFilesListForDiscovery builds the list of proto files from projects.
 func buildProtoFilesListForDiscovery(
 	ctx context.Context,
-	cache *registry.Cache,
+	cache registry.CacheInterface,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
 	resolver *RegistryResolver,
@@ -862,7 +865,7 @@ func preloadProtoFiles(ctx context.Context, resolver *RegistryResolver, projects
 // buildProtoFileList builds the list of proto files to compile using import paths.
 func buildProtoFileList(
 	ctx context.Context,
-	cache *registry.Cache,
+	cache registry.CacheInterface,
 	snapshot git.Hash,
 	projects []registry.ProjectPath,
 	resolver *RegistryResolver,
@@ -937,7 +940,7 @@ func compileProtoFiles(ctx context.Context, resolver *RegistryResolver, protoFil
 
 	_, err := compiler.Compile(ctx, protoFiles...)
 	if rep.Failed() {
-		return &CompileError{Message: ErrCompilationFailed}
+		return &CompileError{Message: constants.ErrMsgCompilationFailed}
 	}
 
 	if err != nil {
@@ -1055,7 +1058,7 @@ func extractImportsFromContent(content []byte) []string {
 // extractImportPathFromLine extracts the import path from a single line if it's an import statement.
 func extractImportPathFromLine(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, importKeyword) {
+	if !strings.HasPrefix(trimmed, constants.ImportKeyword) {
 		return ""
 	}
 
@@ -1065,7 +1068,7 @@ func extractImportPathFromLine(line string) string {
 	startIdx := 0
 	endIdx := 0
 
-	for i := len(importKeyword); i < len(trimmed); i++ {
+	for i := len(constants.ImportKeyword); i < len(trimmed); i++ {
 		if trimmed[i] == '"' || trimmed[i] == '\'' {
 			if quote == 0 {
 				quote = trimmed[i]

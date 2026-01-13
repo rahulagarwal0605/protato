@@ -13,12 +13,12 @@ import (
 
 // WorkspaceContext holds the common resources for workspace operations.
 type WorkspaceContext struct {
-	Repo *git.Repository
-	WS   *local.Workspace
+	Repo git.RepositoryInterface
+	WS   local.WorkspaceInterface
 }
 
 // GetCurrentRepo opens the Git repository from the current working directory.
-func GetCurrentRepo(ctx context.Context) (*git.Repository, error) {
+func GetCurrentRepo(ctx context.Context) (git.RepositoryInterface, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("get cwd: %w", err)
@@ -51,7 +51,7 @@ func OpenWorkspaceContext(ctx context.Context) (*WorkspaceContext, error) {
 }
 
 // OpenRegistry opens the registry cache.
-func OpenRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache, error) {
+func OpenRegistry(ctx context.Context, globals *GlobalOptions) (registry.CacheInterface, error) {
 	if globals.RegistryURL == "" {
 		return nil, fmt.Errorf("registry URL not configured")
 	}
@@ -65,7 +65,7 @@ func OpenRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache,
 }
 
 // OpenAndRefreshRegistry opens and refreshes the registry.
-func OpenAndRefreshRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache, error) {
+func OpenAndRefreshRegistry(ctx context.Context, globals *GlobalOptions) (registry.CacheInterface, error) {
 	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func logProjectFileError(ctx context.Context, project registry.ProjectPath, file
 }
 
 // OpenRegistryWithRefresh opens the registry and optionally refreshes it.
-func OpenRegistryWithRefresh(ctx context.Context, globals *GlobalOptions, offline bool) (*registry.Cache, error) {
+func OpenRegistryWithRefresh(ctx context.Context, globals *GlobalOptions, offline bool) (registry.CacheInterface, error) {
 	reg, err := OpenRegistry(ctx, globals)
 	if err != nil {
 		return nil, err

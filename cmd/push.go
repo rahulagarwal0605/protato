@@ -8,20 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rahulagarwal0605/protato/internal/constants"
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 	"github.com/rahulagarwal0605/protato/internal/utils"
-)
-
-const (
-	// Error messages that indicate non-retryable errors
-	errValidationFailed = "validation failed"
-	errProjectClaim     = "project claim"
-	errOwnership        = "ownership"
-	protoFileExt        = ".proto"
 )
 
 // PushCmd publishes owned projects to registry.
@@ -34,7 +27,7 @@ type PushCmd struct {
 // pushCtx holds the context for a push operation.
 type pushCtx struct {
 	wctx          *WorkspaceContext
-	reg           *registry.Cache
+	reg           registry.CacheInterface
 	repoURL       string
 	currentCommit git.Hash
 	ownedProjects []local.ProjectPath
@@ -141,10 +134,10 @@ func (c *PushCmd) isRetryableError(err error) bool {
 
 	// Non-retryable error patterns
 	nonRetryablePatterns := []string{
-		errValidationFailed,
-		protoc.ErrCompilationFailed,
-		errProjectClaim,
-		errOwnership,
+		constants.ErrMsgValidationFailed,
+		constants.ErrMsgCompilationFailed,
+		constants.ErrMsgProjectClaim,
+		constants.ErrMsgOwnership,
 	}
 
 	if utils.ContainsAny(errStr, nonRetryablePatterns...) {
@@ -288,7 +281,7 @@ func (c *PushCmd) prepareRegistryFiles(ctx context.Context, files []local.Projec
 			LocalPath: f.AbsolutePath,
 		}
 
-		if strings.HasSuffix(f.Path, protoFileExt) && serviceName != "" {
+		if strings.HasSuffix(f.Path, constants.ProtoFileExt) && serviceName != "" {
 			transformed := c.transformProtoFile(ctx, f.AbsolutePath, f.Path, ownedDir, serviceName, pulledPrefixes)
 			if transformed != nil {
 				regFile.Content = transformed
@@ -349,7 +342,7 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot
 		WorkspaceRoot: workspaceRoot,
 		ServiceName:   serviceName,
 	}); err != nil {
-		return fmt.Errorf("%s: %w", errValidationFailed, err)
+		return fmt.Errorf("%s: %w", constants.ErrMsgValidationFailed, err)
 	}
 
 	return nil

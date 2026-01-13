@@ -16,6 +16,26 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
+// RepositoryInterface defines the interface for Git repository operations.
+type RepositoryInterface interface {
+	Root() string
+	GitDir() string
+	IsBare() bool
+	Fetch(context.Context, FetchOptions) error
+	Push(context.Context, PushOptions) error
+	RevHash(context.Context, string) (Hash, error)
+	RevExists(context.Context, string) bool
+	ReadTree(context.Context, Treeish, ReadTreeOptions) ([]TreeEntry, error)
+	WriteObject(context.Context, io.Reader, WriteObjectOptions) (Hash, error)
+	ReadObject(context.Context, ObjectType, Hash, io.Writer) error
+	UpdateTree(context.Context, UpdateTreeRequest) (Hash, error)
+	CommitTree(context.Context, CommitTreeRequest) (Hash, error)
+	UpdateRef(context.Context, string, Hash, Hash) error
+	GetRemoteURL(context.Context, string) (string, error)
+	GetUser(context.Context) (Author, error)
+	GetRepoURL(context.Context) (string, error)
+}
+
 // Repository represents a Git repository.
 type Repository struct {
 	gitDir  string // .git directory

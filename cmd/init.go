@@ -277,7 +277,7 @@ func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *
 
 
 // initWorkspace creates the protato workspace.
-func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Config) (*local.Workspace, error) {
+func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Config) (local.WorkspaceInterface, error) {
 	ws, err := local.Init(ctx, root, cfg, c.Force)
 	if err != nil {
 		return nil, fmt.Errorf("init workspace: %w", err)
@@ -286,7 +286,7 @@ func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Con
 }
 
 // createProjects creates project directories for explicit projects when not using auto-discover.
-func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *local.Config) error {
+func (c *InitCmd) createProjects(ctx context.Context, ws local.WorkspaceInterface, cfg *local.Config) error {
 	// When auto-discover is enabled, projects are discovered automatically
 	if cfg.AutoDiscover {
 		return nil
@@ -331,7 +331,7 @@ func (c *InitCmd) getDirectory(getter func() (string, error), dirName string) (s
 }
 
 // printCompletion prints success messages and next steps after initialization.
-func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) error {
+func (c *InitCmd) printCompletion(ws local.WorkspaceInterface, cfg *local.Config) error {
 	ownedDir, err := c.getDirectory(ws.OwnedDir, "owned")
 	if err != nil {
 		return err

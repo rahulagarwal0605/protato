@@ -8,7 +8,7 @@ import (
 
 // ValidateProtosConfig holds configuration for ValidateProtos.
 type ValidateProtosConfig struct {
-	Cache         *registry.Cache
+	Cache         registry.CacheInterface
 	Snapshot      git.Hash
 	Projects      []registry.ProjectPath
 	OwnedDir      string // Local directory prefix used in proto imports (e.g., "proto")
@@ -16,11 +16,6 @@ type ValidateProtosConfig struct {
 	WorkspaceRoot string // Root directory of the workspace (for finding buf.yaml)
 	ServiceName   string // Service name from workspace configuration (e.g., "lcs-svc")
 }
-
-const (
-	// ErrCompilationFailed is the error message for proto compilation failures.
-	ErrCompilationFailed = "proto compilation failed"
-)
 
 // CompileError represents a compilation error.
 type CompileError struct {

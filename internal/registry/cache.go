@@ -15,15 +15,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/rahulagarwal0605/protato/internal/constants"
+	"github.com/rahulagarwal0605/protato/internal/errors"
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/utils"
-)
-
-const (
-	projectMetaFile = "protato.root.yaml"
-	protosDir       = "protos"
-	protoFileExt    = ".proto"
 )
 
 // projectPathJoin joins a project prefix with additional path parts.
@@ -33,7 +29,7 @@ func projectPathJoin(projectPrefix string, parts ...string) string {
 
 // protosPath builds a path within the protos directory.
 func protosPath(parts ...string) string {
-	return projectPathJoin(protosDir, parts...)
+	return projectPathJoin(constants.ProtosDir, parts...)
 }
 
 // isBlobType checks if a git entry is a blob type.
@@ -43,7 +39,7 @@ func isBlobType(entryType git.ObjectType) bool {
 
 // trimProtosPrefix removes the protos directory prefix from a path.
 func trimProtosPrefix(path string) string {
-	return utils.TrimPathPrefix(path, protosDir)
+	return utils.TrimPathPrefix(path, constants.ProtosDir)
 }
 
 // buildRefspec builds a git refspec string.
@@ -86,27 +82,30 @@ func (r *Cache) checkHashMatch(ctx context.Context, rev string, hash git.Hash) b
 	return err == nil && hash == branchHash
 }
 
-// gitRepository is the interface for Git operations.
-type gitRepository interface {
-	Fetch(context.Context, git.FetchOptions) error
-	Push(context.Context, git.PushOptions) error
-	RevHash(context.Context, string) (git.Hash, error)
-	RevExists(context.Context, string) bool
-	ReadTree(context.Context, git.Treeish, git.ReadTreeOptions) ([]git.TreeEntry, error)
-	WriteObject(context.Context, io.Reader, git.WriteObjectOptions) (git.Hash, error)
-	ReadObject(context.Context, git.ObjectType, git.Hash, io.Writer) error
-	UpdateTree(context.Context, git.UpdateTreeRequest) (git.Hash, error)
-	CommitTree(context.Context, git.CommitTreeRequest) (git.Hash, error)
-	UpdateRef(context.Context, string, git.Hash, git.Hash) error
+// CacheInterface defines the interface for registry cache operations.
+type CacheInterface interface {
+	Close() error
+	Refresh(context.Context) error
+	Snapshot(context.Context) (git.Hash, error)
+	LookupProject(context.Context, *LookupProjectRequest) (*LookupProjectResponse, error)
+	ListProjects(context.Context, *ListProjectsOptions) ([]ProjectPath, error)
+	ListProjectFiles(context.Context, *ListProjectFilesRequest) (*ListProjectFilesResponse, error)
+	ReadProjectFile(context.Context, ProjectFile, io.Writer) error
+	SetProject(context.Context, *SetProjectRequest) (*SetProjectResponse, error)
+	Push(context.Context, git.Hash) error
+	URL() string
+	GetSnapshot(context.Context) (git.Hash, error)
+	RefreshAndGetSnapshot(context.Context) (git.Hash, error)
+	CheckProjectClaim(context.Context, git.Hash, string, string) error
 }
 
 // Cache manages the local cache of the remote registry.
 type Cache struct {
-	root     string        // Cache directory path
-	repo     gitRepository // Bare Git repository
-	url      string        // Registry URL
-	mu       sync.Mutex    // Protects concurrent access to git operations
-	lockFile *os.File      // File lock for cross-process synchronization
+	root     string                    // Cache directory path
+	repo     git.RepositoryInterface   // Bare Git repository
+	url      string                    // Registry URL
+	mu       sync.Mutex                // Protects concurrent access to git operations
+	lockFile *os.File                  // File lock for cross-process synchronization
 }
 
 // Open opens or initializes the registry cache.
@@ -233,12 +232,12 @@ func (r *Cache) findProjectByPath(ctx context.Context, snapshot git.Hash, projec
 		projectPath = parent
 	}
 
-	return nil, ErrNotFound
+	return nil, errors.ErrNotFound
 }
 
 // tryFindProjectAtPath attempts to find a project at the given path.
 func (r *Cache) tryFindProjectAtPath(ctx context.Context, snapshot git.Hash, projectPath string) *LookupProjectResponse {
-	metaPath := protosPath(projectPath, projectMetaFile)
+	metaPath := protosPath(projectPath, constants.ProjectMetaFile)
 	entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
 		Paths: []string{metaPath},
 	})
@@ -302,7 +301,7 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 	}
 
 	// Determine search path: use prefix if provided, otherwise scan entire protos/
-	searchPath := protosDir
+	searchPath := constants.ProtosDir
 	if opts != nil && opts.Prefix != "" {
 		searchPath = protosPath(opts.Prefix)
 	}
@@ -322,7 +321,7 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 		if !isBlobType(entry.Type) {
 			continue
 		}
-		if path.Base(entry.Path) != projectMetaFile {
+		if path.Base(entry.Path) != constants.ProjectMetaFile {
 			continue
 		}
 
@@ -368,7 +367,7 @@ func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesReque
 		}
 
 		// Only include .proto files
-		if !strings.HasSuffix(entry.Path, protoFileExt) {
+		if !strings.HasSuffix(entry.Path, constants.ProtoFileExt) {
 			continue
 		}
 
@@ -462,7 +461,7 @@ func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []Lo
 	if err != nil {
 		return nil, fmt.Errorf("write project meta: %w", err)
 	}
-	upserts = append(upserts, createTreeUpsert(projectPathJoin(projectPrefix, projectMetaFile), metaHash))
+	upserts = append(upserts, createTreeUpsert(projectPathJoin(projectPrefix, constants.ProjectMetaFile), metaHash))
 
 	// Write files
 	for _, file := range files {
@@ -622,7 +621,7 @@ func (r *Cache) CheckProjectClaim(
 		Snapshot: snapshot,
 	})
 
-	if err == ErrNotFound {
+	if err == errors.ErrNotFound {
 		return r.checkSubprojectConflicts(ctx, snapshot, projectPath)
 	}
 	if err != nil {
@@ -639,7 +638,7 @@ func (r *Cache) checkSubprojectConflicts(ctx context.Context, snapshot git.Hash,
 		Snapshot: snapshot,
 	})
 	if len(subprojects) > 0 {
-		return fmt.Errorf("cannot create project %q: overlaps with existing projects", projectPath)
+		return fmt.Errorf("%s: cannot create project %q: overlaps with existing projects", constants.ErrMsgProjectClaim, projectPath)
 	}
 	return nil
 }
@@ -647,11 +646,11 @@ func (r *Cache) checkSubprojectConflicts(ctx context.Context, snapshot git.Hash,
 // validateOwnership validates project ownership.
 func (r *Cache) validateOwnership(ctx context.Context, res *LookupProjectResponse, repoURL, projectPath string) error {
 	if string(res.Project.Path) != projectPath {
-		return fmt.Errorf("cannot create project %q: parent project %q already exists", projectPath, res.Project.Path)
+		return fmt.Errorf("%s: cannot create project %q: parent project %q already exists", constants.ErrMsgProjectClaim, projectPath, res.Project.Path)
 	}
 
 	if repoURL != "" && res.Project.RepositoryURL != repoURL {
-		return fmt.Errorf("project %q is owned by %s", projectPath, res.Project.RepositoryURL)
+		return fmt.Errorf("%s: project %q is owned by %s", constants.ErrMsgOwnership, projectPath, res.Project.RepositoryURL)
 	}
 
 	logger.Log(ctx).Info().Str("project", projectPath).Msg("Project already exists in registry, adding to local config")

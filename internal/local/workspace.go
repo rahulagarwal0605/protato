@@ -10,16 +10,33 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rahulagarwal0605/protato/internal/constants"
+	"github.com/rahulagarwal0605/protato/internal/errors"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
-const (
-	configFileName    = "protato.yaml"
-	lockFileName      = "protato.lock"
-	gitattributesName = ".gitattributes"
-	protoFileExt      = ".proto"
-)
+// WorkspaceInterface defines the interface for workspace operations.
+type WorkspaceInterface interface {
+	Root() string
+	OwnedDir() (string, error)
+	OwnedDirName() (string, error)
+	VendorDir() (string, error)
+	ServiceName() string
+	RegistryProjectPath(localProject ProjectPath) (ProjectPath, error)
+	LocalProjectPath(registryProject ProjectPath) ProjectPath
+	OwnedProjects() ([]ProjectPath, error)
+	ReceivedProjects(ctx context.Context) ([]*ReceivedProject, error)
+	AddOwnedProjects(projects []string) error
+	ReceiveProject(req *ReceiveProjectRequest) (*ProjectReceiver, error)
+	ListOwnedProjectFiles(project ProjectPath) ([]ProjectFile, error)
+	ListVendorProjectFiles(project ProjectPath) ([]ProjectFile, error)
+	IsProjectOwned(project ProjectPath) bool
+	GetProjectLock(project ProjectPath) (*LockFile, error)
+	OrphanedFiles(ctx context.Context) ([]string, error)
+	GetRegistryPath(projectPath string) (ProjectPath, error)
+	GetRegistryPathForProject(project ProjectPath) (ProjectPath, error)
+}
 
 // Workspace represents a local protato workspace.
 type Workspace struct {
@@ -33,7 +50,7 @@ func Init(ctx context.Context, root string, config *Config, force bool) (*Worksp
 
 	// Check if already initialized
 	if _, err := os.Stat(configPath); err == nil && !force {
-		return nil, ErrAlreadyInitialized
+		return nil, errors.ErrAlreadyInitialized
 	}
 
 	// Build config (merge with existing if force, otherwise use provided)
@@ -128,7 +145,7 @@ func Open(ctx context.Context, root string) (*Workspace, error) {
 
 	// Check if initialized
 	if utils.DirNotExists(configPath) {
-		return nil, ErrNotInitialized
+		return nil, errors.ErrNotInitialized
 	}
 
 	// Read config
@@ -164,12 +181,12 @@ func projectPathJoin(dir string, project ProjectPath) string {
 
 // lockFilePath returns the path to a lock file for a project.
 func lockFilePath(projectDir, projectPath string) string {
-	return filepath.Join(projectDir, projectPath, lockFileName)
+	return filepath.Join(projectDir, projectPath, constants.LockFileName)
 }
 
 // configPath returns the path to the config file in the given root directory.
 func configPath(root string) string {
-	return filepath.Join(root, configFileName)
+	return filepath.Join(root, constants.ConfigFileName)
 }
 
 // OwnedDir returns the absolute directory path for owned (producer) protos.
@@ -199,7 +216,7 @@ func (ws *Workspace) ServiceName() string {
 // It prefixes the project path with the service name.
 func (ws *Workspace) RegistryProjectPath(localProject ProjectPath) (ProjectPath, error) {
 	if ws.config == nil || ws.config.Service == "" {
-		return "", ErrServiceNotConfigured
+		return "", errors.ErrServiceNotConfigured
 	}
 	return ProjectPath(utils.BuildServicePrefixedPath(ws.config.Service, string(localProject))), nil
 }
@@ -284,7 +301,7 @@ func (ws *Workspace) scanProjects(filterPattern *string) ([]ProjectPath, error) 
 
 // processProtoFile processes a proto file entry and returns the project path if valid.
 func (ws *Workspace) processProtoFile(p string, d fs.DirEntry, ownedPath string, filterPattern *string, seen map[string]bool) string {
-	if d.IsDir() || !strings.HasSuffix(d.Name(), protoFileExt) {
+	if d.IsDir() || !strings.HasSuffix(d.Name(), constants.ProtoFileExt) {
 		return ""
 	}
 
@@ -446,7 +463,7 @@ func (ws *Workspace) findReceivedProjectsInVendor(ctx context.Context, vendorPat
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || d.Name() != lockFileName {
+		if d.IsDir() || d.Name() != constants.LockFileName {
 			return nil
 		}
 
@@ -552,7 +569,7 @@ func (ws *Workspace) listProjectFiles(projectPath string, project ProjectPath, a
 			return err
 		}
 		// Only process .proto files (skip directories and non-proto files)
-		if d.IsDir() || !strings.HasSuffix(d.Name(), protoFileExt) {
+		if d.IsDir() || !strings.HasSuffix(d.Name(), constants.ProtoFileExt) {
 			return nil
 		}
 
@@ -682,13 +699,13 @@ func (r *ProjectReceiver) Finish() (*ReceiveStats, error) {
 	}
 
 	// Write lock file
-	lockPath := r.receiverPathJoin(lockFileName)
+	lockPath := r.receiverPathJoin(constants.LockFileName)
 	if err := writeLockFile(lockPath, &LockFile{Snapshot: string(r.snapshot)}); err != nil {
 		return nil, fmt.Errorf("write lock file: %w", err)
 	}
 
 	// Write .gitattributes
-	gitattrsPath := r.receiverPathJoin(gitattributesName)
+	gitattrsPath := r.receiverPathJoin(constants.GitattributesName)
 	if err := os.WriteFile(gitattrsPath, []byte("* linguist-generated=true\n"), 0644); err != nil {
 		return nil, fmt.Errorf("write gitattributes: %w", err)
 	}
@@ -808,7 +825,7 @@ func (ws *Workspace) findOrphanedInDir(dirPath string, knownProjects map[string]
 
 // checkIfOrphaned checks if a file is orphaned and returns its repo-relative path if so.
 func (ws *Workspace) checkIfOrphaned(filePath, absDirPath, fileName string, knownProjects map[string]bool) string {
-	if !strings.HasSuffix(fileName, protoFileExt) {
+	if !strings.HasSuffix(fileName, constants.ProtoFileExt) {
 		return ""
 	}
 

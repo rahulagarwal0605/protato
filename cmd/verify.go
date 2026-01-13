@@ -22,7 +22,7 @@ type VerifyCmd struct {
 // verifyCtx holds resources for verification.
 type verifyCtx struct {
 	wctx    *WorkspaceContext
-	reg     *registry.Cache
+	reg     registry.CacheInterface
 	repoURL string
 }
 
@@ -69,7 +69,7 @@ func (c *VerifyCmd) prepareverifyCtx(ctx context.Context, globals *GlobalOptions
 		return nil, err
 	}
 
-	var reg *registry.Cache
+	var reg registry.CacheInterface
 	if globals.RegistryURL != "" {
 		reg, err = c.openRegistry(ctx, globals)
 		if err != nil {
@@ -85,7 +85,7 @@ func (c *VerifyCmd) prepareverifyCtx(ctx context.Context, globals *GlobalOptions
 }
 
 // openRegistry opens and optionally refreshes the registry.
-func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache, error) {
+func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions) (registry.CacheInterface, error) {
 	return OpenRegistryWithRefresh(ctx, globals, c.Offline)
 }
 
@@ -227,7 +227,7 @@ func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyCtx, projec
 }
 
 // verifyOrphanedFiles checks for files not belonging to any project.
-func (c *VerifyCmd) verifyOrphanedFiles(ctx context.Context, ws *local.Workspace) error {
+func (c *VerifyCmd) verifyOrphanedFiles(ctx context.Context, ws local.WorkspaceInterface) error {
 	logger.Log(ctx).Info().Msg("Checking for orphaned files")
 
 	orphaned, err := ws.OrphanedFiles(ctx)

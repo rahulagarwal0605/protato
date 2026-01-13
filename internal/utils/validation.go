@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+
+	"github.com/rahulagarwal0605/protato/internal/constants"
 )
 
 // ValidateProjectPath validates a project path.
@@ -15,16 +17,16 @@ import (
 // - Must be a valid filesystem path
 func ValidateProjectPath(p string) error {
 	if p == "" {
-		return errors.New("project path cannot be empty")
+		return errors.New(constants.ErrMsgProjectPathEmpty)
 	}
 	if strings.Contains(p, "\\") {
-		return errors.New("project path cannot contain backslashes")
+		return errors.New(constants.ErrMsgProjectPathBackslash)
 	}
 	if strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
-		return errors.New("project path cannot have leading or trailing slashes")
+		return errors.New(constants.ErrMsgProjectPathSlash)
 	}
 	if !fs.ValidPath(p) {
-		return errors.New("invalid project path")
+		return errors.New(constants.ErrMsgProjectPathInvalid)
 	}
 	return nil
 }

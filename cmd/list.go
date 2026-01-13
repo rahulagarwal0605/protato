@@ -76,7 +76,7 @@ func (c *ListCmd) listRegistry(ctx context.Context, globals *GlobalOptions) erro
 }
 
 // printRegistryProjects lists and prints all projects from the registry.
-func (c *ListCmd) printRegistryProjects(ctx context.Context, reg *registry.Cache) error {
+func (c *ListCmd) printRegistryProjects(ctx context.Context, reg registry.CacheInterface) error {
 	projects, err := reg.ListProjects(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("list projects: %w", err)
