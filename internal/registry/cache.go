@@ -156,44 +156,21 @@ func (r *Cache) LookupProject(ctx context.Context, req *LookupProjectRequest) (*
 		return nil, err
 	}
 
-	// Verify snapshot exists
 	if !r.repo.RevExists(ctx, string(snapshot)) {
 		return nil, fmt.Errorf("snapshot not found: %s", snapshot)
 	}
 
-	// Search for project root file
-	projectPath := req.Path
+	return r.findProjectByPath(ctx, snapshot, req.Path)
+}
+
+// findProjectByPath searches for a project by walking up the path hierarchy.
+func (r *Cache) findProjectByPath(ctx context.Context, snapshot git.Hash, projectPath string) (*LookupProjectResponse, error) {
 	for {
-		metaPath := path.Join(protosDir, projectPath, projectMetaFile)
-		entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
-			Paths: []string{metaPath},
-		})
-		if err == nil && len(entries) > 0 {
-			// Found project root
-			project, err := r.readProjectMeta(ctx, entries[0].Hash)
-			if err != nil {
-				return nil, err
-			}
-			project.Path = ProjectPath(projectPath)
-
-			// Get project tree hash
-			projTreePath := path.Join(protosDir, projectPath)
-			treeEntries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
-				Paths: []string{projTreePath},
-			})
-			var projectHash git.Hash
-			if err == nil && len(treeEntries) > 0 {
-				projectHash = treeEntries[0].Hash
-			}
-
-			return &LookupProjectResponse{
-				Project:     project,
-				Snapshot:    snapshot,
-				ProjectHash: projectHash,
-			}, nil
+		response := r.tryFindProjectAtPath(ctx, snapshot, projectPath)
+		if response != nil {
+			return response, nil
 		}
 
-		// Move up one level
 		parent := path.Dir(projectPath)
 		if parent == "." || parent == projectPath {
 			break
@@ -202,6 +179,42 @@ func (r *Cache) LookupProject(ctx context.Context, req *LookupProjectRequest) (*
 	}
 
 	return nil, ErrNotFound
+}
+
+// tryFindProjectAtPath attempts to find a project at the given path.
+func (r *Cache) tryFindProjectAtPath(ctx context.Context, snapshot git.Hash, projectPath string) *LookupProjectResponse {
+	metaPath := path.Join(protosDir, projectPath, projectMetaFile)
+	entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
+		Paths: []string{metaPath},
+	})
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+
+	project, err := r.readProjectMeta(ctx, entries[0].Hash)
+	if err != nil {
+		return nil
+	}
+	project.Path = ProjectPath(projectPath)
+
+	projectHash := r.getProjectTreeHash(ctx, snapshot, projectPath)
+	return &LookupProjectResponse{
+		Project:     project,
+		Snapshot:    snapshot,
+		ProjectHash: projectHash,
+	}
+}
+
+// getProjectTreeHash retrieves the tree hash for a project path.
+func (r *Cache) getProjectTreeHash(ctx context.Context, snapshot git.Hash, projectPath string) git.Hash {
+	projTreePath := path.Join(protosDir, projectPath)
+	treeEntries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
+		Paths: []string{projTreePath},
+	})
+	if err == nil && len(treeEntries) > 0 {
+		return treeEntries[0].Hash
+	}
+	return git.Hash("")
 }
 
 // readProjectMeta reads a project metadata file.
@@ -494,26 +507,45 @@ func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
 
 // getDefaultBranch returns the default branch name (main, master, etc.)
 func (r *Cache) getDefaultBranch(ctx context.Context) string {
-	// Try to get the branch from HEAD reference (for bare repos, HEAD points to refs/heads/branch)
-	if headRef, err := r.repo.RevHash(ctx, "HEAD"); err == nil {
-		// Check common branch names - try local refs first (for bare repos after clone)
-		for _, branch := range []string{"main", "master"} {
-			if branchHash, err := r.repo.RevHash(ctx, "refs/heads/"+branch); err == nil {
-				if headRef == branchHash {
-					return branch
-				}
-			}
-			// Also check remote refs (after fetch)
-			if branchHash, err := r.repo.RevHash(ctx, "refs/remotes/origin/"+branch); err == nil {
-				if headRef == branchHash {
-					return branch
-				}
-			}
-		}
+	headRef, err := r.repo.RevHash(ctx, "HEAD")
+	if err != nil {
+		return "main"
+	}
+
+	branch := r.findBranchMatchingHash(ctx, headRef)
+	if branch != "" {
+		return branch
 	}
 
 	// Default to main (more common now) if we can't detect
 	return "main"
+}
+
+// findBranchMatchingHash checks common branch names to find one matching the given hash.
+func (r *Cache) findBranchMatchingHash(ctx context.Context, hash git.Hash) string {
+	for _, branch := range []string{"main", "master"} {
+		if r.branchMatchesHash(ctx, branch, hash) {
+			return branch
+		}
+	}
+	return ""
+}
+
+// branchMatchesHash checks if a branch (local or remote) matches the given hash.
+func (r *Cache) branchMatchesHash(ctx context.Context, branch string, hash git.Hash) bool {
+	// Check local refs first (for bare repos after clone)
+	if branchHash, err := r.repo.RevHash(ctx, "refs/heads/"+branch); err == nil {
+		if hash == branchHash {
+			return true
+		}
+	}
+	// Also check remote refs (after fetch)
+	if branchHash, err := r.repo.RevHash(ctx, "refs/remotes/origin/"+branch); err == nil {
+		if hash == branchHash {
+			return true
+		}
+	}
+	return false
 }
 
 // URL returns the registry URL.

@@ -285,61 +285,56 @@ func (ws *Workspace) scanProjects(filterPattern *string) ([]ProjectPath, error) 
 		return nil, err
 	}
 
-	var projects []ProjectPath
-	seen := make(map[string]bool)
-
 	if _, err := os.Stat(ownedPath); os.IsNotExist(err) {
 		return []ProjectPath{}, nil
 	}
 
-	// Walk the owned directory to find all .proto files
+	var projects []ProjectPath
+	seen := make(map[string]bool)
+
 	err = filepath.WalkDir(ownedPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip non-proto files
-		if d.IsDir() || !strings.HasSuffix(d.Name(), protoFileExt) {
-			return nil
+		projectPath := ws.processProtoFile(p, d, ownedPath, filterPattern, seen)
+		if projectPath != "" {
+			projects = append(projects, ProjectPath(projectPath))
 		}
-
-		// Get the directory containing this proto file
-		protoDir := filepath.Dir(p)
-
-		// Calculate path relative to owned directory (for pattern matching and return value)
-		relToOwned, err := filepath.Rel(ownedPath, protoDir)
-		if err != nil {
-			return nil
-		}
-		relToOwned = filepath.ToSlash(relToOwned)
-
-		// Apply filter pattern if provided (match against owned-directory-relative path)
-		if filterPattern != nil {
-			if !ws.matchesPattern(relToOwned, []string{*filterPattern}) {
-				return nil
-			}
-		}
-
-		// Skip if we've already seen this project
-		if seen[relToOwned] {
-			return nil
-		}
-		seen[relToOwned] = true
-
-		// Filter out pulled projects
-		isPulled, err := ws.isPulledProject(relToOwned)
-		if err != nil {
-			return err
-		}
-		if isPulled {
-			return nil
-		}
-
-		projects = append(projects, ProjectPath(relToOwned))
 		return nil
 	})
 
 	return projects, err
+}
+
+// processProtoFile processes a proto file entry and returns the project path if valid.
+func (ws *Workspace) processProtoFile(p string, d fs.DirEntry, ownedPath string, filterPattern *string, seen map[string]bool) string {
+	if d.IsDir() || !strings.HasSuffix(d.Name(), protoFileExt) {
+		return ""
+	}
+
+	protoDir := filepath.Dir(p)
+	relToOwned, err := filepath.Rel(ownedPath, protoDir)
+	if err != nil {
+		return ""
+	}
+	relToOwned = filepath.ToSlash(relToOwned)
+
+	if filterPattern != nil && !ws.matchesPattern(relToOwned, []string{*filterPattern}) {
+		return ""
+	}
+
+	if seen[relToOwned] {
+		return ""
+	}
+	seen[relToOwned] = true
+
+	isPulled, err := ws.isPulledProject(relToOwned)
+	if err != nil || isPulled {
+		return ""
+	}
+
+	return relToOwned
 }
 
 // discoverProjectsByPattern finds projects matching project patterns within the owned directory.
@@ -457,33 +452,40 @@ func (ws *Workspace) isPulledProject(projectPath string) (bool, error) {
 
 // ReceivedProjects returns the list of received (pulled) projects.
 func (ws *Workspace) ReceivedProjects(ctx context.Context) ([]*ReceivedProject, error) {
-	var received []*ReceivedProject
-
-	// Look in vendor directory for received projects
 	vendorPath, err := ws.VendorDir()
 	if err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat(vendorPath); os.IsNotExist(err) {
-		return received, nil
+		return []*ReceivedProject{}, nil
 	}
 
-	// Get owned projects for filtering
+	owned := ws.buildOwnedProjectsMap()
+	return ws.findReceivedProjectsInVendor(ctx, vendorPath, owned)
+}
+
+// buildOwnedProjectsMap builds a map of owned project paths for filtering.
+func (ws *Workspace) buildOwnedProjectsMap() map[string]bool {
 	owned := make(map[string]bool)
 	ownedProjects, err := ws.OwnedProjects()
 	if err != nil {
-		return nil, err
+		return owned
 	}
 	for _, p := range ownedProjects {
 		owned[string(p)] = true
-		// Also add with service prefix
 		if ws.config.Service != "" {
 			owned[path.Join(ws.config.Service, string(p))] = true
 		}
 	}
+	return owned
+}
+
+// findReceivedProjectsInVendor finds received projects in the vendor directory.
+func (ws *Workspace) findReceivedProjectsInVendor(ctx context.Context, vendorPath string, owned map[string]bool) ([]*ReceivedProject, error) {
+	var received []*ReceivedProject
 
 	// Walk vendor directory looking for lock files
-	err = filepath.WalkDir(vendorPath, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(vendorPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -935,18 +937,16 @@ func (ws *Workspace) OrphanedFiles(ctx context.Context) ([]string, error) {
 
 // findOrphanedInDir finds files in a directory that don't belong to known projects.
 func (ws *Workspace) findOrphanedInDir(dirPath string, knownProjects map[string]bool) ([]string, error) {
-	var orphaned []string
-
-	// Make dirPath absolute to ensure filepath.Rel works correctly
 	absDirPath, err := filepath.Abs(dirPath)
 	if err != nil {
 		return nil, err
 	}
 
 	if _, err := os.Stat(absDirPath); os.IsNotExist(err) {
-		return orphaned, nil
+		return []string{}, nil
 	}
 
+	var orphaned []string
 	err = filepath.WalkDir(absDirPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -955,113 +955,78 @@ func (ws *Workspace) findOrphanedInDir(dirPath string, knownProjects map[string]
 			return nil
 		}
 
-		// Skip special files
-		name := d.Name()
-		if name == lockFileName || name == gitattributesName {
-			return nil
+		if orphanPath := ws.checkIfOrphaned(p, absDirPath, d.Name(), knownProjects); orphanPath != "" {
+			orphaned = append(orphaned, orphanPath)
 		}
-
-		// Only consider .proto files as orphaned
-		if !strings.HasSuffix(name, protoFileExt) {
-			return nil
-		}
-
-		// Get relative path from directory
-		relPath, err := filepath.Rel(absDirPath, p)
-		if err != nil {
-			return nil
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		// Check if file belongs to any known project
-		belongsToProject := false
-		for proj := range knownProjects {
-			if strings.HasPrefix(relPath, proj+"/") || relPath == proj {
-				belongsToProject = true
-				break
-			}
-		}
-
-		if !belongsToProject {
-			// Return path relative to repo root
-			repoRelPath, _ := filepath.Rel(ws.root, p)
-			orphaned = append(orphaned, repoRelPath)
-		}
-
 		return nil
 	})
 
 	return orphaned, err
 }
 
+// checkIfOrphaned checks if a file is orphaned and returns its repo-relative path if so.
+func (ws *Workspace) checkIfOrphaned(filePath, absDirPath, fileName string, knownProjects map[string]bool) string {
+	if !strings.HasSuffix(fileName, protoFileExt) {
+		return ""
+	}
+
+	relPath, err := filepath.Rel(absDirPath, filePath)
+	if err != nil {
+		return ""
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	if ws.fileBelongsToProject(relPath, knownProjects) {
+		return ""
+	}
+
+	repoRelPath, _ := filepath.Rel(ws.root, filePath)
+	return repoRelPath
+}
+
+// fileBelongsToProject checks if a file belongs to any known project.
+func (ws *Workspace) fileBelongsToProject(relPath string, knownProjects map[string]bool) bool {
+	for proj := range knownProjects {
+		if strings.HasPrefix(relPath, proj+"/") || relPath == proj {
+			return true
+		}
+	}
+	return false
+}
+
 // findOrphanedInDirExcluding finds files in a directory that don't belong to known projects,
 // excluding a specific subdirectory (e.g., vendor directory).
 func (ws *Workspace) findOrphanedInDirExcluding(dirPath string, knownProjects map[string]bool, excludeDir string) ([]string, error) {
-	var orphaned []string
-
-	// Make dirPath absolute to ensure filepath.Rel works correctly
 	absDirPath, err := filepath.Abs(dirPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Make excludeDir absolute
 	absExcludeDir, err := filepath.Abs(excludeDir)
 	if err != nil {
 		return nil, err
 	}
 
 	if _, err := os.Stat(absDirPath); os.IsNotExist(err) {
-		return orphaned, nil
+		return []string{}, nil
 	}
 
+	var orphaned []string
 	err = filepath.WalkDir(absDirPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip the excluded directory entirely
 		if d.IsDir() {
-			// Check if this directory is the excluded directory
 			if p == absExcludeDir {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// Skip special files
-		name := d.Name()
-		if name == lockFileName || name == gitattributesName {
-			return nil
+		if orphanPath := ws.checkIfOrphaned(p, absDirPath, d.Name(), knownProjects); orphanPath != "" {
+			orphaned = append(orphaned, orphanPath)
 		}
-
-		// Only consider .proto files as orphaned
-		if !strings.HasSuffix(name, protoFileExt) {
-			return nil
-		}
-
-		// Get relative path from directory
-		relPath, err := filepath.Rel(absDirPath, p)
-		if err != nil {
-			return nil
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		// Check if file belongs to any known project
-		belongsToProject := false
-		for proj := range knownProjects {
-			if strings.HasPrefix(relPath, proj+"/") || relPath == proj {
-				belongsToProject = true
-				break
-			}
-		}
-
-		if !belongsToProject {
-			// Return path relative to repo root
-			repoRelPath, _ := filepath.Rel(ws.root, p)
-			orphaned = append(orphaned, repoRelPath)
-		}
-
 		return nil
 	})
 
