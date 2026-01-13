@@ -2,7 +2,14 @@
 package registry
 
 import (
+	"errors"
+
 	"github.com/rahulagarwal0605/protato/internal/git"
+)
+
+var (
+	// ErrNotFound is returned when a project is not found.
+	ErrNotFound = errors.New("project not found")
 )
 
 // ProjectPath represents a project path in the registry.

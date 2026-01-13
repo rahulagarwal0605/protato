@@ -11,6 +11,7 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 // InitCmd initializes protato in a repository.
@@ -158,7 +159,7 @@ func (c *InitCmd) promptOrShowService(ctx context.Context, root string, reader *
 		defaultService := filepath.Base(root)
 		fmt.Printf("Service name (used for registry namespace):\n  [default: %s]\n  > ", defaultService)
 
-		input, err := readLine(ctx, reader)
+		input, err := utils.ReadLine(ctx, reader)
 		if err != nil {
 			return err
 		}
@@ -179,7 +180,7 @@ func (c *InitCmd) promptOrShowOwnedDir(ctx context.Context, root string, reader 
 		defaultDir := local.DefaultDirectoryConfig().Owned
 		fmt.Printf("\nDirectory for YOUR protos (protos you produce):\n  [default: %s]\n  > ", defaultDir)
 
-		input, err := readLine(ctx, reader)
+		input, err := utils.ReadLine(ctx, reader)
 		if err != nil {
 			return err
 		}
@@ -200,7 +201,7 @@ func (c *InitCmd) promptOrShowVendorDir(ctx context.Context, root string, reader
 		defaultDir := local.DefaultDirectoryConfig().Vendor
 		fmt.Printf("\nDirectory for VENDOR protos (protos you consume):\n  [default: %s]\n  > ", defaultDir)
 
-		input, err := readLine(ctx, reader)
+		input, err := utils.ReadLine(ctx, reader)
 		if err != nil {
 			return err
 		}
@@ -220,7 +221,7 @@ func (c *InitCmd) promptOrShowAutoDiscover(ctx context.Context, root string, rea
 	if !c.NoAutoDiscover {
 		fmt.Printf("\nAuto-discover projects? (scans for all .proto files automatically)\n  [Y/n]: ")
 
-		input, err := readLine(ctx, reader)
+		input, err := utils.ReadLine(ctx, reader)
 		if err != nil {
 			return err
 		}
@@ -239,12 +240,12 @@ func (c *InitCmd) promptOrShowProjects(ctx context.Context, root string, reader 
 		if !cfg.AutoDiscover {
 			fmt.Printf("\nProject patterns (glob, e.g., payments/**, orders/v*):\n  [required when auto-discover is disabled]\n  > ")
 
-			input, err := readLine(ctx, reader)
+			input, err := utils.ReadLine(ctx, reader)
 			if err != nil {
 				return err
 			}
 			if input != "" {
-				projects := ParseCommaSeparated(input)
+				projects := utils.ParseCommaSeparated(input)
 				cfg.Projects = append(cfg.Projects, projects...)
 			}
 		}
@@ -260,12 +261,12 @@ func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *
 	if len(c.Ignores) == 0 {
 		fmt.Printf("\nIgnore patterns (glob, e.g., **/test/**, deprecated/*):\n  [optional, press Enter to skip]\n  > ")
 
-		input, err := readLine(ctx, reader)
+		input, err := utils.ReadLine(ctx, reader)
 		if err != nil {
 			return err
 		}
 		if input != "" {
-			ignores := ParseCommaSeparated(input)
+			ignores := utils.ParseCommaSeparated(input)
 			cfg.Ignores = append(cfg.Ignores, ignores...)
 		}
 	} else {
@@ -274,31 +275,6 @@ func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *
 	return nil
 }
 
-// readLine reads a line from the reader and trims whitespace.
-// Returns an error if the context is cancelled (e.g., Ctrl+C).
-func readLine(ctx context.Context, reader *bufio.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	resultChan := make(chan result, 1)
-
-	go func() {
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			resultChan <- result{"", err}
-			return
-		}
-		resultChan <- result{strings.TrimSpace(input), nil}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case res := <-resultChan:
-		return res.line, res.err
-	}
-}
 
 // initWorkspace creates the protato workspace.
 func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Config) (*local.Workspace, error) {
@@ -317,7 +293,7 @@ func (c *InitCmd) createProjects(ctx context.Context, ws *local.Workspace, cfg *
 	}
 
 	// When auto-discover is disabled, create directories for literal paths (not glob patterns)
-	literalPaths := ExtractLiteralPaths(cfg.Projects)
+	literalPaths := utils.ExtractLiteralPaths(cfg.Projects)
 	if len(literalPaths) == 0 {
 		return nil
 	}
@@ -345,15 +321,24 @@ func (c *InitCmd) initRegistryCache(ctx context.Context, globals *GlobalOptions)
 	}
 }
 
+// getDirectory gets a directory path with error handling.
+func (c *InitCmd) getDirectory(getter func() (string, error), dirName string) (string, error) {
+	dir, err := getter()
+	if err != nil {
+		return "", fmt.Errorf("get %s directory: %w", dirName, err)
+	}
+	return dir, nil
+}
+
 // printCompletion prints success messages and next steps after initialization.
 func (c *InitCmd) printCompletion(ws *local.Workspace, cfg *local.Config) error {
-	ownedDir, err := ws.OwnedDir()
+	ownedDir, err := c.getDirectory(ws.OwnedDir, "owned")
 	if err != nil {
-		return fmt.Errorf("get owned directory: %w", err)
+		return err
 	}
-	vendorDir, err := ws.VendorDir()
+	vendorDir, err := c.getDirectory(ws.VendorDir, "vendor")
 	if err != nil {
-		return fmt.Errorf("get vendor directory: %w", err)
+		return err
 	}
 
 	fmt.Printf("✅ Created protato.yaml\n")

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/logger"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 const (
@@ -26,10 +26,65 @@ const (
 	protoFileExt    = ".proto"
 )
 
-var (
-	// ErrNotFound is returned when a project is not found.
-	ErrNotFound = errors.New("project not found")
-)
+// projectPathJoin joins a project prefix with additional path parts.
+func projectPathJoin(projectPrefix string, parts ...string) string {
+	return utils.JoinPathPrefix(projectPrefix, parts...)
+}
+
+// protosPath builds a path within the protos directory.
+func protosPath(parts ...string) string {
+	return projectPathJoin(protosDir, parts...)
+}
+
+// isBlobType checks if a git entry is a blob type.
+func isBlobType(entryType git.ObjectType) bool {
+	return entryType == git.BlobType
+}
+
+// trimProtosPrefix removes the protos directory prefix from a path.
+func trimProtosPrefix(path string) string {
+	return utils.TrimPathPrefix(path, protosDir)
+}
+
+// buildRefspec builds a git refspec string.
+func buildRefspec(src, dst string) git.Refspec {
+	return git.Refspec(fmt.Sprintf("%s:%s", src, dst))
+}
+
+// buildBranchRef builds a branch reference path.
+func buildBranchRef(branch string) string {
+	return "refs/heads/" + branch
+}
+
+// buildRemoteBranchRef builds a remote branch reference path.
+func buildRemoteBranchRef(branch string) string {
+	return "refs/remotes/origin/" + branch
+}
+
+// writeObject writes an object to the git repository.
+func (r *Cache) writeObject(ctx context.Context, reader io.Reader) (git.Hash, error) {
+	return r.repo.WriteObject(ctx, reader, git.WriteObjectOptions{})
+}
+
+// createTreeUpsert creates a git.TreeUpsert with standard file mode.
+func createTreeUpsert(path string, blob git.Hash) git.TreeUpsert {
+	return git.TreeUpsert{
+		Path: path,
+		Blob: blob,
+		Mode: 0100644,
+	}
+}
+
+// readTreeError wraps read tree errors with a consistent message.
+func readTreeError(err error) error {
+	return fmt.Errorf("read tree: %w", err)
+}
+
+// checkHashMatch checks if a rev hash matches the given hash.
+func (r *Cache) checkHashMatch(ctx context.Context, rev string, hash git.Hash) bool {
+	branchHash, err := r.repo.RevHash(ctx, rev)
+	return err == nil && hash == branchHash
+}
 
 // gitRepository is the interface for Git operations.
 type gitRepository interface {
@@ -126,7 +181,7 @@ func (r *Cache) Refresh(ctx context.Context) error {
 	return r.repo.Fetch(ctx, git.FetchOptions{
 		Remote: "origin",
 		RefSpecs: []git.Refspec{
-			git.Refspec(fmt.Sprintf("refs/heads/%s:refs/remotes/origin/%s", branch, branch)),
+			buildRefspec(buildBranchRef(branch), buildRemoteBranchRef(branch)),
 		},
 		Depth: 1,
 		Prune: true,
@@ -183,7 +238,7 @@ func (r *Cache) findProjectByPath(ctx context.Context, snapshot git.Hash, projec
 
 // tryFindProjectAtPath attempts to find a project at the given path.
 func (r *Cache) tryFindProjectAtPath(ctx context.Context, snapshot git.Hash, projectPath string) *LookupProjectResponse {
-	metaPath := path.Join(protosDir, projectPath, projectMetaFile)
+	metaPath := protosPath(projectPath, projectMetaFile)
 	entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
 		Paths: []string{metaPath},
 	})
@@ -207,7 +262,7 @@ func (r *Cache) tryFindProjectAtPath(ctx context.Context, snapshot git.Hash, pro
 
 // getProjectTreeHash retrieves the tree hash for a project path.
 func (r *Cache) getProjectTreeHash(ctx context.Context, snapshot git.Hash, projectPath string) git.Hash {
-	projTreePath := path.Join(protosDir, projectPath)
+	projTreePath := protosPath(projectPath)
 	treeEntries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
 		Paths: []string{projTreePath},
 	})
@@ -249,7 +304,7 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 	// Determine search path: use prefix if provided, otherwise scan entire protos/
 	searchPath := protosDir
 	if opts != nil && opts.Prefix != "" {
-		searchPath = path.Join(protosDir, opts.Prefix)
+		searchPath = protosPath(opts.Prefix)
 	}
 
 	// List all files in search path
@@ -258,13 +313,13 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 		Paths:   []string{searchPath},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read tree: %w", err)
+		return nil, readTreeError(err)
 	}
 
 	// Find all project root files
 	projectSet := make(map[string]bool)
 	for _, entry := range entries {
-		if entry.Type != git.BlobType {
+		if !isBlobType(entry.Type) {
 			continue
 		}
 		if path.Base(entry.Path) != projectMetaFile {
@@ -273,7 +328,7 @@ func (r *Cache) ListProjects(ctx context.Context, opts *ListProjectsOptions) ([]
 
 		// Extract project path
 		dir := path.Dir(entry.Path)
-		projectPath := strings.TrimPrefix(dir, protosDir+"/")
+		projectPath := trimProtosPrefix(dir)
 
 		projectSet[projectPath] = true
 	}
@@ -297,18 +352,18 @@ func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesReque
 		return nil, err
 	}
 
-	projectPath := path.Join(protosDir, string(req.Project))
+	projectPath := protosPath(string(req.Project))
 	entries, err := r.repo.ReadTree(ctx, git.Treeish(snapshot), git.ReadTreeOptions{
 		Recurse: true,
 		Paths:   []string{projectPath},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read tree: %w", err)
+		return nil, readTreeError(err)
 	}
 
 	var files []ProjectFile
 	for _, entry := range entries {
-		if entry.Type != git.BlobType {
+		if !isBlobType(entry.Type) {
 			continue
 		}
 
@@ -318,7 +373,7 @@ func (r *Cache) ListProjectFiles(ctx context.Context, req *ListProjectFilesReque
 		}
 
 		// Get relative path
-		relPath := strings.TrimPrefix(entry.Path, projectPath+"/")
+		relPath := utils.TrimPathPrefix(entry.Path, projectPath)
 
 		files = append(files, ProjectFile{
 			Snapshot: snapshot,
@@ -354,7 +409,7 @@ func (r *Cache) SetProject(ctx context.Context, req *SetProjectRequest) (*SetPro
 		return nil, fmt.Errorf("get current tree: %w", err)
 	}
 
-	projectPrefix := path.Join(protosDir, string(req.Project.Path))
+	projectPrefix := protosPath(string(req.Project.Path))
 	upserts, err := r.prepareUpserts(ctx, req.Project, req.Files, projectPrefix)
 	if err != nil {
 		return nil, err
@@ -403,15 +458,11 @@ func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []Lo
 
 	// Write project metadata
 	metaContent := fmt.Sprintf("git:\n  commit: %s\n  url: %s\n", project.Commit, project.RepositoryURL)
-	metaHash, err := r.repo.WriteObject(ctx, strings.NewReader(metaContent), git.WriteObjectOptions{})
+	metaHash, err := r.writeObject(ctx, strings.NewReader(metaContent))
 	if err != nil {
 		return nil, fmt.Errorf("write project meta: %w", err)
 	}
-	upserts = append(upserts, git.TreeUpsert{
-		Path: path.Join(projectPrefix, projectMetaFile),
-		Blob: metaHash,
-		Mode: 0100644,
-	})
+	upserts = append(upserts, createTreeUpsert(projectPathJoin(projectPrefix, projectMetaFile), metaHash))
 
 	// Write files
 	for _, file := range files {
@@ -420,7 +471,7 @@ func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []Lo
 
 		if file.Content != nil {
 			// Use provided content (e.g., transformed imports)
-			hash, err = r.repo.WriteObject(ctx, bytes.NewReader(file.Content), git.WriteObjectOptions{})
+			hash, err = r.writeObject(ctx, bytes.NewReader(file.Content))
 			if err != nil {
 				return nil, fmt.Errorf("write transformed object: %w", err)
 			}
@@ -431,18 +482,14 @@ func (r *Cache) prepareUpserts(ctx context.Context, project *Project, files []Lo
 				return nil, fmt.Errorf("open file %s: %w", file.LocalPath, err)
 			}
 
-			hash, err = r.repo.WriteObject(ctx, f, git.WriteObjectOptions{})
+			hash, err = r.writeObject(ctx, f)
 			f.Close()
 			if err != nil {
 				return nil, fmt.Errorf("write object: %w", err)
 			}
 		}
 
-		upserts = append(upserts, git.TreeUpsert{
-			Path: path.Join(projectPrefix, file.Path),
-			Blob: hash,
-			Mode: 0100644,
-		})
+		upserts = append(upserts, createTreeUpsert(projectPathJoin(projectPrefix, file.Path), hash))
 	}
 
 	return upserts, nil
@@ -464,7 +511,7 @@ func (r *Cache) prepareDeletes(ctx context.Context, projectPath ProjectPath, new
 	if existingFiles != nil {
 		for _, f := range existingFiles.Files {
 			if !newFilesMap[f.Path] {
-				deletes = append(deletes, path.Join(projectPrefix, f.Path))
+				deletes = append(deletes, projectPathJoin(projectPrefix, f.Path))
 			}
 		}
 	}
@@ -500,7 +547,7 @@ func (r *Cache) Push(ctx context.Context, hash git.Hash) error {
 	return r.repo.Push(ctx, git.PushOptions{
 		Remote: "origin",
 		RefSpecs: []git.Refspec{
-			git.Refspec(fmt.Sprintf("%s:refs/heads/%s", hash, branch)),
+			buildRefspec(string(hash), buildBranchRef(branch)),
 		},
 	})
 }
@@ -534,21 +581,80 @@ func (r *Cache) findBranchMatchingHash(ctx context.Context, hash git.Hash) strin
 // branchMatchesHash checks if a branch (local or remote) matches the given hash.
 func (r *Cache) branchMatchesHash(ctx context.Context, branch string, hash git.Hash) bool {
 	// Check local refs first (for bare repos after clone)
-	if branchHash, err := r.repo.RevHash(ctx, "refs/heads/"+branch); err == nil {
-		if hash == branchHash {
-			return true
-		}
+	if r.checkHashMatch(ctx, buildBranchRef(branch), hash) {
+		return true
 	}
 	// Also check remote refs (after fetch)
-	if branchHash, err := r.repo.RevHash(ctx, "refs/remotes/origin/"+branch); err == nil {
-		if hash == branchHash {
-			return true
-		}
-	}
-	return false
+	return r.checkHashMatch(ctx, buildRemoteBranchRef(branch), hash)
 }
 
 // URL returns the registry URL.
 func (r *Cache) URL() string {
 	return r.url
 }
+
+// GetSnapshot gets the current snapshot from the registry.
+func (r *Cache) GetSnapshot(ctx context.Context) (git.Hash, error) {
+	snapshot, err := r.Snapshot(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+// RefreshAndGetSnapshot refreshes the registry and gets the current snapshot.
+func (r *Cache) RefreshAndGetSnapshot(ctx context.Context) (git.Hash, error) {
+	if err := r.Refresh(ctx); err != nil {
+		return "", fmt.Errorf("refresh registry: %w", err)
+	}
+	return r.GetSnapshot(ctx)
+}
+
+// CheckProjectClaim checks if a project can be claimed by the given repository.
+func (r *Cache) CheckProjectClaim(
+	ctx context.Context,
+	snapshot git.Hash,
+	repoURL string,
+	projectPath string,
+) error {
+	res, err := r.LookupProject(ctx, &LookupProjectRequest{
+		Path:     projectPath,
+		Snapshot: snapshot,
+	})
+
+	if err == ErrNotFound {
+		return r.checkSubprojectConflicts(ctx, snapshot, projectPath)
+	}
+	if err != nil {
+		return fmt.Errorf("lookup project: %w", err)
+	}
+
+	return r.validateOwnership(ctx, res, repoURL, projectPath)
+}
+
+// checkSubprojectConflicts checks if any subprojects exist under the path.
+func (r *Cache) checkSubprojectConflicts(ctx context.Context, snapshot git.Hash, projectPath string) error {
+	subprojects, _ := r.ListProjects(ctx, &ListProjectsOptions{
+		Prefix:   projectPath + "/",
+		Snapshot: snapshot,
+	})
+	if len(subprojects) > 0 {
+		return fmt.Errorf("cannot create project %q: overlaps with existing projects", projectPath)
+	}
+	return nil
+}
+
+// validateOwnership validates project ownership.
+func (r *Cache) validateOwnership(ctx context.Context, res *LookupProjectResponse, repoURL, projectPath string) error {
+	if string(res.Project.Path) != projectPath {
+		return fmt.Errorf("cannot create project %q: parent project %q already exists", projectPath, res.Project.Path)
+	}
+
+	if repoURL != "" && res.Project.RepositoryURL != repoURL {
+		return fmt.Errorf("project %q is owned by %s", projectPath, res.Project.RepositoryURL)
+	}
+
+	logger.Log(ctx).Info().Str("project", projectPath).Msg("Project already exists in registry, adding to local config")
+	return nil
+}
+

@@ -3,6 +3,8 @@ package local
 
 import (
 	"errors"
+	"hash"
+	"os"
 
 	"github.com/rahulagarwal0605/protato/internal/git"
 )
@@ -45,6 +47,10 @@ var (
 	ErrVendorDirNotSet = errors.New("vendor directory not configured")
 	// ErrServiceNotConfigured is returned when RegistryProjectPath is called but service is not configured.
 	ErrServiceNotConfigured = errors.New("service name not configured")
+	// ErrAlreadyInitialized is returned when trying to init an already initialized workspace.
+	ErrAlreadyInitialized = errors.New("workspace already initialized")
+	// ErrNotInitialized is returned when trying to open a non-initialized workspace.
+	ErrNotInitialized = errors.New("workspace not initialized")
 )
 
 // OwnedDir returns the owned directory.
@@ -100,4 +106,22 @@ type ReceiveProjectRequest struct {
 type ReceiveStats struct {
 	FilesChanged int
 	FilesDeleted int
+}
+
+// ProjectReceiver handles receiving files for a project.
+type ProjectReceiver struct {
+	ws          *Workspace
+	project     ProjectPath
+	projectRoot string
+	snapshot    git.Hash
+	changed     int
+	deleted     int
+}
+
+// ProjectFileWriter handles writing a project file.
+type ProjectFileWriter struct {
+	file         *os.File
+	hash         hash.Hash
+	existingHash []byte
+	onClose      func(changed bool)
 }

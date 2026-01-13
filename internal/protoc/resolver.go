@@ -21,6 +21,7 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 const (
@@ -30,6 +31,33 @@ const (
 	// importKeyword is the "import " keyword used in proto files
 	importKeyword = "import "
 )
+
+// isGoogleProtobufImport checks if an import path is a standard google/protobuf import.
+func isGoogleProtobufImport(importPath string) bool {
+	return strings.HasPrefix(importPath, googleProtobufPrefix)
+}
+
+// registerProject registers a project as discovered (thread-safe).
+func (r *RegistryResolver) registerProject(project registry.ProjectPath) {
+	r.mu.Lock()
+	r.projects[project] = struct{}{}
+	r.mu.Unlock()
+}
+
+// getCachedFile retrieves a file from cache if it exists.
+func (r *RegistryResolver) getCachedFile(path string) ([]byte, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cached, ok := r.fileCache[path]
+	return cached, ok
+}
+
+// cacheFile caches a file content (thread-safe).
+func (r *RegistryResolver) cacheFile(path string, content []byte) {
+	r.mu.Lock()
+	r.fileCache[path] = content
+	r.mu.Unlock()
+}
 
 // RegistryResolver resolves proto imports from the registry.
 type RegistryResolver struct {
@@ -125,19 +153,20 @@ func (r *RegistryResolver) preloadFile(ctx context.Context, project registry.Pro
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.servicePrefix != "" && strings.HasPrefix(registryPath, r.servicePrefix+"/") {
+	if utils.HasServicePrefix(registryPath, r.servicePrefix) {
 		r.cacheFileWithServicePrefix(ctx, registryPath, content, cacheAtRegistryPath)
 	} else {
 		r.fileCache[registryPath] = content
 	}
 
+	// Register project (already holding lock, so don't call registerProject)
 	r.projects[project] = struct{}{}
 	return nil
 }
 
 // cacheFileWithServicePrefix caches a file that has a service prefix.
 func (r *RegistryResolver) cacheFileWithServicePrefix(ctx context.Context, registryPath string, content []byte, cacheAtRegistryPath bool) {
-	subPath := strings.TrimPrefix(registryPath, r.servicePrefix+"/")
+	subPath := utils.TrimServicePrefix(registryPath, r.servicePrefix)
 
 	// Skip google/protobuf - those come from standard imports
 	if strings.Contains(subPath, googleProtobufPrefix) {
@@ -177,11 +206,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 	mappedPath := r.mapImportPath(filePath)
 
 	// Check cache for mapped path first
-	r.mu.Lock()
-	cached, ok := r.fileCache[mappedPath]
-	r.mu.Unlock()
-
-	if ok {
+	if cached, ok := r.getCachedFile(mappedPath); ok {
 		if cached == nil {
 			return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 		}
@@ -192,11 +217,7 @@ func (r *RegistryResolver) FindFileByPath(filePath string) (protocompile.SearchR
 
 	// Try original path if different
 	if mappedPath != filePath {
-		r.mu.Lock()
-		cached, ok = r.fileCache[filePath]
-		r.mu.Unlock()
-
-		if ok {
+		if cached, ok := r.getCachedFile(filePath); ok {
 			if cached == nil {
 				return protocompile.SearchResult{}, fmt.Errorf("cached content is nil for %s", filePath)
 			}
@@ -247,9 +268,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 	}
 
 	// Record discovered project
-	r.mu.Lock()
-	r.projects[res.Project.Path] = struct{}{}
-	r.mu.Unlock()
+	r.registerProject(res.Project.Path)
 	logger.Log(ctx).Debug().Str("filePath", filePath).Str("project", string(res.Project.Path)).Msg("loadFileFromGit: discovered project")
 
 	// Get relative path within project
@@ -293,9 +312,7 @@ func (r *RegistryResolver) loadFileFromGit(filePath string) (protocompile.Search
 
 	// Cache the file content
 	fileContent := buf.Bytes()
-	r.mu.Lock()
-	r.fileCache[filePath] = fileContent
-	r.mu.Unlock()
+	r.cacheFile(filePath, fileContent)
 
 	return protocompile.SearchResult{
 		Source: bytes.NewReader(fileContent),
@@ -316,7 +333,7 @@ func (r *RegistryResolver) untransformImports(content []byte) []byte {
 		return content
 	}
 
-	lines := strings.Split(string(content), "\n")
+	lines := utils.SplitContentToLines(content)
 	result := make([]string, 0, len(lines))
 	changed := false
 
@@ -331,7 +348,7 @@ func (r *RegistryResolver) untransformImports(content []byte) []byte {
 	if !changed {
 		return content
 	}
-	return []byte(strings.Join(result, "\n"))
+	return utils.JoinLines(result)
 }
 
 // untransformImportLine transforms a single import line if it has a service prefix.
@@ -341,19 +358,13 @@ func (r *RegistryResolver) untransformImportLine(line string) (string, bool) {
 		return line, false
 	}
 
-	if !strings.HasPrefix(importPath, r.servicePrefix+"/") {
+	if !utils.HasServicePrefix(importPath, r.servicePrefix) {
 		return line, false
 	}
 
-	subPath := strings.TrimPrefix(importPath, r.servicePrefix+"/")
-	newImportPath := r.buildImportPath(subPath)
-	newLine := strings.Replace(line, importPath, newImportPath, 1)
-	return newLine, true
-}
-
-// buildImportPath builds the import path with the import prefix if set.
-func (r *RegistryResolver) buildImportPath(subPath string) string {
-	return r.buildImportCachePath(subPath)
+	subPath := utils.TrimServicePrefix(importPath, r.servicePrefix)
+	newImportPath := r.buildImportCachePath(subPath)
+	return utils.ReplaceStringInLine(line, importPath, newImportPath), true
 }
 
 func (r *RegistryResolver) mapImportPath(importPath string) string {
@@ -362,7 +373,7 @@ func (r *RegistryResolver) mapImportPath(importPath string) string {
 	}
 
 	// Skip standard imports (google/protobuf) - they're provided by protocompile
-	if strings.HasPrefix(importPath, googleProtobufPrefix) {
+	if isGoogleProtobufImport(importPath) {
 		return importPath
 	}
 
@@ -370,12 +381,9 @@ func (r *RegistryResolver) mapImportPath(importPath string) string {
 	// strip it to get the import path
 	// e.g., "druid/buf/validate/..." -> "buf/validate/..."
 	// e.g., "lcs-svc/common/..." -> "proto/common/..." (when importPrefix="proto")
-	if strings.HasPrefix(importPath, r.servicePrefix+"/") {
-		subPath := strings.TrimPrefix(importPath, r.servicePrefix+"/")
-		if r.importPrefix != "" {
-			return r.importPrefix + "/" + subPath
-		}
-		return subPath
+	if utils.HasServicePrefix(importPath, r.servicePrefix) {
+		subPath := utils.TrimServicePrefix(importPath, r.servicePrefix)
+		return r.buildImportCachePath(subPath)
 	}
 
 	return importPath
@@ -450,9 +458,8 @@ func setupServicePrefixForDiscovery(resolver *RegistryResolver, projects []regis
 	if len(projects) == 0 {
 		return
 	}
-	projectPath := string(projects[0])
-	if idx := strings.Index(projectPath, "/"); idx > 0 {
-		resolver.SetServicePrefix(projectPath[:idx])
+	if prefix := utils.ExtractServicePrefixFromProject(string(projects[0])); prefix != "" {
+		resolver.SetServicePrefix(prefix)
 	}
 }
 
@@ -478,9 +485,7 @@ func buildProtoFilesListForDiscovery(
 		protoFiles = append(protoFiles, buildImportPathsForProject(project, filesRes.Files, resolver.servicePrefix)...)
 
 		// Mark requested projects as discovered
-		resolver.mu.Lock()
-		resolver.projects[project] = struct{}{}
-		resolver.mu.Unlock()
+		resolver.registerProject(project)
 	}
 	return protoFiles
 }
@@ -490,9 +495,8 @@ func ensureServicePrefixSet(resolver *RegistryResolver, project registry.Project
 	if resolver.servicePrefix != "" {
 		return
 	}
-	projectStr := string(project)
-	if idx := strings.Index(projectStr, "/"); idx > 0 {
-		resolver.SetServicePrefix(projectStr[:idx])
+	if prefix := utils.ExtractServicePrefixFromProject(string(project)); prefix != "" {
+		resolver.SetServicePrefix(prefix)
 	}
 }
 
@@ -501,8 +505,8 @@ func buildImportPathsForProject(project registry.ProjectPath, files []registry.P
 	var paths []string
 	projectStr := string(project)
 	for _, f := range files {
-		if servicePrefix != "" && strings.HasPrefix(projectStr, servicePrefix+"/") {
-			subPath := strings.TrimPrefix(projectStr, servicePrefix+"/")
+		if utils.HasServicePrefix(projectStr, servicePrefix) {
+			subPath := utils.TrimServicePrefix(projectStr, servicePrefix)
 			paths = append(paths, path.Join(subPath, f.Path))
 		} else {
 			paths = append(paths, path.Join(projectStr, f.Path))
@@ -543,7 +547,7 @@ func discoverProjectsFromImports(ctx context.Context, resolver *RegistryResolver
 		logger.Log(ctx).Debug().Str("file", protoFile).Int("importCount", len(imports)).Msg("Extracted imports from file")
 
 		for _, imp := range imports {
-			if strings.HasPrefix(imp, googleProtobufPrefix) {
+			if isGoogleProtobufImport(imp) {
 				continue
 			}
 			discoverProjectFromImport(ctx, resolver, imp)
@@ -553,16 +557,13 @@ func discoverProjectsFromImports(ctx context.Context, resolver *RegistryResolver
 
 // getFileContentFromCache retrieves file content from the resolver's cache.
 func getFileContentFromCache(resolver *RegistryResolver, protoFile string) []byte {
-	resolver.mu.Lock()
-	defer resolver.mu.Unlock()
-
 	if resolver.servicePrefix != "" {
-		registryPath := resolver.servicePrefix + "/" + protoFile
-		if content, ok := resolver.fileCache[registryPath]; ok {
+		registryPath := utils.BuildServicePrefixedPath(resolver.servicePrefix, protoFile)
+		if content, ok := resolver.getCachedFile(registryPath); ok {
 			return content
 		}
 	}
-	if content, ok := resolver.fileCache[protoFile]; ok {
+	if content, ok := resolver.getCachedFile(protoFile); ok {
 		return content
 	}
 	return nil
@@ -572,7 +573,7 @@ func getFileContentFromCache(resolver *RegistryResolver, protoFile string) []byt
 func discoverProjectFromImport(ctx context.Context, resolver *RegistryResolver, imp string) {
 	logger.Log(ctx).Debug().Str("import", imp).Msg("Found import")
 
-	if resolver.servicePrefix == "" || !strings.HasPrefix(imp, resolver.servicePrefix+"/") {
+	if !utils.HasServicePrefix(imp, resolver.servicePrefix) {
 		logger.Log(ctx).Debug().
 			Str("import", imp).
 			Str("servicePrefix", resolver.servicePrefix).
@@ -604,11 +605,7 @@ func discoverProjectFromImport(ctx context.Context, resolver *RegistryResolver, 
 
 // extractProjectPathFromImport extracts the project path from an import path.
 func extractProjectPathFromImport(imp string) string {
-	parts := strings.Split(imp, "/")
-	if len(parts) < 2 {
-		return ""
-	}
-	return strings.Join(parts[:len(parts)-1], "/")
+	return utils.ExtractParentPath(imp)
 }
 
 // isProjectAlreadyDiscovered checks if a project has already been discovered.
@@ -642,9 +639,7 @@ func lookupAndRegisterProject(ctx context.Context, resolver *RegistryResolver, i
 		Msg("LookupProject completed")
 
 	if err == nil && res != nil && res.Project != nil {
-		resolver.mu.Lock()
-		resolver.projects[res.Project.Path] = struct{}{}
-		resolver.mu.Unlock()
+		resolver.registerProject(res.Project.Path)
 		logger.Log(ctx).Debug().
 			Str("import", imp).
 			Str("project", string(res.Project.Path)).
@@ -731,10 +726,20 @@ func exportBufDependencies(ctx context.Context, bufDir string) string {
 	return exportDir
 }
 
-// loadExportedFiles loads proto files from the buf export directory into the resolver cache.
-func (r *RegistryResolver) loadExportedFiles(ctx context.Context, exportDir string) error {
+// loadProtoFilesFromDir loads proto files from a directory into the resolver cache.
+// skipIfExists: if true, skip files that already exist in cache; if false, always cache
+func (r *RegistryResolver) loadProtoFilesFromDir(ctx context.Context, dir string, skipIfExists bool, logPrefix string) error {
+	if dir == "" {
+		return nil
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+
 	count := 0
-	err := filepath.WalkDir(exportDir, func(filePath string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(filePath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
@@ -743,23 +748,28 @@ func (r *RegistryResolver) loadExportedFiles(ctx context.Context, exportDir stri
 		}
 
 		// Get relative path (this is the import path)
-		relPath, err := filepath.Rel(exportDir, filePath)
+		importPath, err := utils.RelPathToSlash(dir, filePath)
 		if err != nil {
 			return nil
 		}
-		// Convert to forward slashes for import paths
-		importPath := filepath.ToSlash(relPath)
 
 		r.mu.Lock()
-		// Skip if we already have this file at exact path OR at import path
-		// We now cache owned files at import paths (e.g., "buf/validate/..." not "druid/buf/validate/...")
-		if _, exists := r.fileCache[importPath]; exists {
-			logger.Log(ctx).Debug().Str("path", importPath).Msg("Skipping BSR file (already cached)")
-			r.mu.Unlock()
-			return nil
+		if skipIfExists {
+			if _, exists := r.fileCache[importPath]; exists {
+				logger.Log(ctx).Debug().Str("path", importPath).Msg("Skipping " + logPrefix + " file (already cached)")
+				r.mu.Unlock()
+				return nil
+			}
+		} else {
+			// For vendor files, only cache if not already present
+			if _, exists := r.fileCache[importPath]; exists {
+				r.mu.Unlock()
+				return nil
+			}
 		}
 		r.mu.Unlock()
-		logger.Log(ctx).Debug().Str("path", importPath).Msg("Loading BSR file")
+
+		logger.Log(ctx).Debug().Str("path", importPath).Msg("Loading " + logPrefix + " file")
 
 		// Read file content
 		content, err := os.ReadFile(filePath)
@@ -768,85 +778,30 @@ func (r *RegistryResolver) loadExportedFiles(ctx context.Context, exportDir stri
 		}
 
 		// Cache the file
-		r.mu.Lock()
-		r.fileCache[importPath] = content
+		r.cacheFile(importPath, content)
 		count++
-		r.mu.Unlock()
 
 		return nil
 	})
 
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Error walking buf export directory")
+		logger.Log(ctx).Warn().Err(err).Msg("Error walking " + logPrefix + " directory")
 	}
-	logger.Log(ctx).Debug().Int("files", count).Msg("Loaded buf dependencies into cache")
+	if count > 0 {
+		logger.Log(ctx).Debug().Int("files", count).Str("dir", dir).Msg("Loaded " + logPrefix + " dependencies into cache")
+	}
 	return nil
+}
+
+// loadExportedFiles loads proto files from the buf export directory into the resolver cache.
+func (r *RegistryResolver) loadExportedFiles(ctx context.Context, exportDir string) error {
+	return r.loadProtoFilesFromDir(ctx, exportDir, true, "BSR")
 }
 
 // loadVendorFiles loads proto files from the local vendor directory into the resolver cache.
 // This allows owned protos to import pulled dependencies during validation.
 func (r *RegistryResolver) loadVendorFiles(ctx context.Context, vendorDir string) error {
-	if vendorDir == "" {
-		return nil
-	}
-
-	// Check if vendor directory exists
-	if _, err := os.Stat(vendorDir); os.IsNotExist(err) {
-		return nil
-	}
-
-	count := 0
-	err := filepath.WalkDir(vendorDir, func(filePath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-		if d.IsDir() || !strings.HasSuffix(filePath, ".proto") {
-			return nil
-		}
-
-		// Get relative path (this is the import path)
-		relPath, err := filepath.Rel(vendorDir, filePath)
-		if err != nil {
-			return nil
-		}
-		// Convert to forward slashes for import paths
-		importPath := filepath.ToSlash(relPath)
-
-		// Read file content
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil
-		}
-
-		// Cache the file (only if not already present - registry files take precedence)
-		r.mu.Lock()
-		if _, exists := r.fileCache[importPath]; !exists {
-			r.fileCache[importPath] = content
-			count++
-		}
-		r.mu.Unlock()
-
-		return nil
-	})
-
-	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Msg("Error walking vendor directory")
-	}
-	if count > 0 {
-		logger.Log(ctx).Debug().Int("files", count).Str("dir", vendorDir).Msg("Loaded vendor dependencies into cache")
-	}
-	return nil
-}
-
-// ValidateProtosConfig holds configuration for ValidateProtos.
-type ValidateProtosConfig struct {
-	Cache         *registry.Cache
-	Snapshot      git.Hash
-	Projects      []registry.ProjectPath
-	OwnedDir      string // Local directory prefix used in proto imports (e.g., "proto")
-	VendorDir     string // Directory containing pulled dependencies
-	WorkspaceRoot string // Root directory of the workspace (for finding buf.yaml)
-	ServiceName   string // Service name from workspace configuration (e.g., "lcs-svc")
+	return r.loadProtoFilesFromDir(ctx, vendorDir, false, "vendor")
 }
 
 // ValidateProtos validates that the proto files compile successfully.
@@ -948,8 +903,8 @@ func buildProjectProtoFiles(project registry.ProjectPath, files []registry.Proje
 // Returns the path that matches how imports work in proto files.
 // Returns "" for files that should NOT be compiled (only resolved when imported).
 func buildImportPath(projectStr, filePath string, resolver *RegistryResolver) string {
-	if resolver.servicePrefix != "" && strings.HasPrefix(projectStr, resolver.servicePrefix+"/") {
-		subPath := strings.TrimPrefix(projectStr, resolver.servicePrefix+"/")
+	if utils.HasServicePrefix(projectStr, resolver.servicePrefix) {
+		subPath := utils.TrimServicePrefix(projectStr, resolver.servicePrefix)
 
 		// Skip google/protobuf files - they're provided by standard imports
 		if strings.Contains(subPath, "google/protobuf") {
@@ -1003,20 +958,6 @@ func handleCompileError(ctx context.Context, err error) error {
 	return &CompileError{Message: err.Error()}
 }
 
-const (
-	// ErrCompilationFailed is the error message for proto compilation failures.
-	ErrCompilationFailed = "proto compilation failed"
-)
-
-// CompileError represents a compilation error.
-type CompileError struct {
-	Message string
-}
-
-func (e *CompileError) Error() string {
-	return e.Message
-}
-
 // TransformImports transforms import paths in a proto file content.
 // Simple version without pulled project handling.
 func TransformImports(content []byte, ownedDir, servicePrefix string) []byte {
@@ -1033,7 +974,7 @@ func TransformImportsWithPulled(content []byte, ownedDir, servicePrefix string, 
 		return content
 	}
 
-	lines := strings.Split(string(content), "\n")
+	lines := utils.SplitContentToLines(content)
 	var result []string
 
 	for _, line := range lines {
@@ -1041,7 +982,7 @@ func TransformImportsWithPulled(content []byte, ownedDir, servicePrefix string, 
 		result = append(result, transformed)
 	}
 
-	return []byte(strings.Join(result, "\n"))
+	return utils.JoinLines(result)
 }
 
 // transformImportLine transforms a single import line.
@@ -1052,7 +993,7 @@ func transformImportLine(line, ownedDir, servicePrefix string, pulledPrefixes []
 		return line
 	}
 
-	if strings.HasPrefix(importPath, googleProtobufPrefix) {
+	if isGoogleProtobufImport(importPath) {
 		return line
 	}
 
@@ -1065,7 +1006,7 @@ func transformImportLine(line, ownedDir, servicePrefix string, pulledPrefixes []
 		return handlePulledProject(line, importPath, pathToTransform, ownedDir)
 	}
 
-	if strings.HasPrefix(pathToTransform, servicePrefix+"/") {
+	if utils.HasServicePrefix(pathToTransform, servicePrefix) {
 		return line
 	}
 
@@ -1074,48 +1015,36 @@ func transformImportLine(line, ownedDir, servicePrefix string, pulledPrefixes []
 
 // extractPathToTransform extracts the path portion to transform based on ownedDir.
 func extractPathToTransform(importPath, ownedDir string) string {
-	if ownedDir == "" {
-		return importPath
-	}
-	ownedPrefix := ownedDir + "/"
-	if !strings.HasPrefix(importPath, ownedPrefix) {
-		return ""
-	}
-	return strings.TrimPrefix(importPath, ownedPrefix)
+	return utils.RemovePathPrefixIfExists(importPath, ownedDir)
 }
 
 // isPulledProject checks if the path represents a pulled project.
 func isPulledProject(pathToTransform string, pulledPrefixes []string) bool {
-	for _, pulledPrefix := range pulledPrefixes {
-		if strings.HasPrefix(pathToTransform, pulledPrefix+"/") || pathToTransform == pulledPrefix {
-			return true
-		}
-	}
-	return false
+	return utils.HasAnyPrefix(pathToTransform, pulledPrefixes)
 }
 
 // handlePulledProject handles transformation for pulled project imports.
 func handlePulledProject(line, importPath, pathToTransform, ownedDir string) string {
 	if ownedDir != "" {
-		return strings.Replace(line, importPath, pathToTransform, 1)
+		return utils.ReplaceStringInLine(line, importPath, pathToTransform)
 	}
 	return line
 }
 
 // transformOwnedProject transforms an owned project import by adding the service prefix.
 func transformOwnedProject(line, importPath, pathToTransform, servicePrefix string) string {
-	newImportPath := servicePrefix + "/" + pathToTransform
-	return strings.Replace(line, importPath, newImportPath, 1)
+	newImportPath := utils.BuildServicePrefixedPath(servicePrefix, pathToTransform)
+	return utils.ReplaceStringInLine(line, importPath, newImportPath)
 }
 
 // extractImportsFromContent extracts all import statements from proto file content.
 func extractImportsFromContent(content []byte) []string {
 	var imports []string
-	lines := strings.Split(string(content), "\n")
+	lines := utils.SplitContentToLines(content)
 
 	for _, line := range lines {
 		importPath := extractImportPathFromLine(line)
-		if importPath != "" && !strings.HasPrefix(importPath, googleProtobufPrefix) {
+		if importPath != "" && !isGoogleProtobufImport(importPath) {
 			imports = append(imports, importPath)
 		}
 	}

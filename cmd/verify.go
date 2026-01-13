@@ -11,6 +11,7 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 // VerifyCmd verifies workspace integrity.
@@ -63,7 +64,7 @@ func (c *VerifyCmd) prepareverifyCtx(ctx context.Context, globals *GlobalOptions
 		return nil, err
 	}
 
-	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	repoURL, err := wctx.Repo.GetRepoURL(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -85,18 +86,7 @@ func (c *VerifyCmd) prepareverifyCtx(ctx context.Context, globals *GlobalOptions
 
 // openRegistry opens and optionally refreshes the registry.
 func (c *VerifyCmd) openRegistry(ctx context.Context, globals *GlobalOptions) (*registry.Cache, error) {
-	reg, err := OpenRegistry(ctx, globals)
-	if err != nil {
-		return nil, err
-	}
-
-	if !c.Offline {
-		if err := reg.Refresh(ctx); err != nil {
-			logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
-		}
-	}
-
-	return reg, nil
+	return OpenRegistryWithRefresh(ctx, globals, c.Offline)
 }
 
 // verifyOwnedProjects checks ownership claims for owned projects.
@@ -108,7 +98,7 @@ func (c *VerifyCmd) verifyOwnedProjects(ctx context.Context, vctx *verifyCtx) er
 
 	var hasErrors bool
 	for _, project := range ownedProjects {
-		if err := CheckProjectClaim(ctx, vctx.reg, snapshot, vctx.repoURL, string(project)); err != nil {
+		if err := vctx.reg.CheckProjectClaim(ctx, snapshot, vctx.repoURL, string(project)); err != nil {
 			logger.Log(ctx).Error().Str("project", string(project)).Err(err).Msg("Claim check failed")
 			hasErrors = true
 		} else {
@@ -155,8 +145,8 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyCtx, 
 		return err
 	}
 
-	regFileMap := buildFileMap(regFiles)
-	localFileSet := buildFileSet(localFiles)
+	regFileMap := utils.SliceToMapWithValue(regFiles, func(f registry.ProjectFile) string { return f.Path }, func(f registry.ProjectFile) git.Hash { return f.Hash })
+	localFileSet := utils.BuildFileSet(localFiles, func(f local.ProjectFile) string { return f.Path })
 
 	var hasErrors bool
 
@@ -168,10 +158,7 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyCtx, 
 
 	for regPath := range regFileMap {
 		if !localFileSet[regPath] {
-			logger.Log(ctx).Error().
-				Str("project", string(project)).
-				Str("file", regPath).
-				Msg("File deleted locally")
+			logProjectFileError(ctx, project, regPath, "File deleted locally")
 			hasErrors = true
 		}
 	}
@@ -182,6 +169,7 @@ func (c *VerifyCmd) verifyReceivedProject(ctx context.Context, vctx *verifyCtx, 
 	return nil
 }
 
+
 // getProjectFiles retrieves files from both registry and local workspace.
 func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyCtx, project registry.ProjectPath, snapshot git.Hash) ([]registry.ProjectFile, []local.ProjectFile, error) {
 	regFiles, err := vctx.reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
@@ -189,45 +177,26 @@ func (c *VerifyCmd) getProjectFiles(ctx context.Context, vctx *verifyCtx, projec
 		Snapshot: snapshot,
 	})
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list registry files")
+		logProjectError(ctx, err, project, "Failed to list registry files")
 		return nil, nil, err
 	}
 
 	localFiles, err := vctx.wctx.WS.ListVendorProjectFiles(local.ProjectPath(project))
 	if err != nil {
-		logger.Log(ctx).Warn().Err(err).Str("project", string(project)).Msg("Failed to list local files")
+		logProjectError(ctx, err, project, "Failed to list local files")
 		return nil, nil, err
 	}
 
 	return regFiles.Files, localFiles, nil
 }
 
-// buildFileMap creates a map of registry files by path.
-func buildFileMap(files []registry.ProjectFile) map[string]git.Hash {
-	m := make(map[string]git.Hash)
-	for _, f := range files {
-		m[f.Path] = f.Hash
-	}
-	return m
-}
 
-// buildFileSet creates a set of local file paths.
-func buildFileSet(files []local.ProjectFile) map[string]bool {
-	m := make(map[string]bool)
-	for _, f := range files {
-		m[f.Path] = true
-	}
-	return m
-}
 
 // verifyLocalFile checks if a local file matches the registry.
 func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyCtx, project registry.ProjectPath, snapshot git.Hash, f local.ProjectFile, regFileMap map[string]git.Hash) error {
 	regHash, exists := regFileMap[f.Path]
 	if !exists {
-		logger.Log(ctx).Error().
-			Str("project", string(project)).
-			Str("file", f.Path).
-			Msg("File added locally")
+		logProjectFileError(ctx, project, f.Path, "File added locally")
 		return fmt.Errorf("file added: %s", f.Path)
 	}
 
@@ -250,10 +219,7 @@ func (c *VerifyCmd) verifyLocalFile(ctx context.Context, vctx *verifyCtx, projec
 	regFileHash := sha256.Sum256(regData.Bytes())
 
 	if localHash != regFileHash {
-		logger.Log(ctx).Error().
-			Str("project", string(project)).
-			Str("file", f.Path).
-			Msg("File modified locally")
+		logProjectFileError(ctx, project, f.Path, "File modified locally")
 		return fmt.Errorf("file modified: %s", f.Path)
 	}
 
