@@ -121,6 +121,7 @@ func (r *Repository) gitCmd(args ...string) *gitCmd {
 	cmd := newGitCmd(args...)
 	if r.bare {
 		cmd.env = append(cmd.env, "GIT_DIR="+r.gitDir)
+		cmd.dir = r.gitDir // Also set working directory for bare repos
 	} else {
 		cmd.dir = r.rootDir
 	}
