@@ -40,3 +40,18 @@ func Init() zerolog.Logger {
 	}
 	return zerolog.New(output).With().Timestamp().Logger()
 }
+
+// SetLogLevel sets the global log level based on verbosity count.
+//   - verbosity 0: InfoLevel
+//   - verbosity 1: DebugLevel
+//   - verbosity 2+: TraceLevel
+func SetLogLevel(verbosity int) {
+	switch verbosity {
+	case 0:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case 1:
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	}
+}

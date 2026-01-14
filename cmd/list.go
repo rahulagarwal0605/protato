@@ -6,7 +6,6 @@ import (
 	"sort"
 
 	"github.com/rahulagarwal0605/protato/internal/local"
-	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
 )
 
@@ -68,23 +67,16 @@ func (c *ListCmd) printLocalProjects(owned []local.ProjectPath, received []*loca
 
 // listRegistry lists projects from the remote registry.
 func (c *ListCmd) listRegistry(ctx context.Context, globals *GlobalOptions) error {
-	reg, err := OpenRegistry(ctx, globals)
+	reg, err := OpenRegistryWithRefresh(ctx, globals, c.Offline)
 	if err != nil {
 		return err
-	}
-
-	if !c.Offline {
-		logger.Log(ctx).Debug().Msg("Refreshing registry")
-		if err := reg.Refresh(ctx); err != nil {
-			logger.Log(ctx).Warn().Err(err).Msg("Failed to refresh registry")
-		}
 	}
 
 	return c.printRegistryProjects(ctx, reg)
 }
 
 // printRegistryProjects lists and prints all projects from the registry.
-func (c *ListCmd) printRegistryProjects(ctx context.Context, reg *registry.Cache) error {
+func (c *ListCmd) printRegistryProjects(ctx context.Context, reg registry.CacheInterface) error {
 	projects, err := reg.ListProjects(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("list projects: %w", err)

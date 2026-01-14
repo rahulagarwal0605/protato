@@ -37,14 +37,34 @@ install:
 
 # Run tests
 test:
-	@echo "Running tests..."
+	@echo "Running all tests..."
 	@go test -v ./...
+
+# Run unit tests only
+test-unit:
+	@echo "Running unit tests..."
+	@go test -v ./internal/... ./cmd/...
+
+# Run integration tests only
+test-integration:
+	@echo "Running integration tests..."
+	@go test -v ./tests/integration/...
+
+# Run e2e tests only
+test-e2e:
+	@echo "Running e2e tests..."
+	@go test -v ./tests/e2e/...
 
 # Run tests with coverage
 test-coverage:
 	@echo "Running tests with coverage..."
 	@go test -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
+
+# Run tests excluding e2e (for CI)
+test-short:
+	@echo "Running tests (excluding e2e)..."
+	@go test -short -v ./...
 
 # Run linter
 lint:
@@ -112,8 +132,12 @@ help:
 	@echo "  build        - Build the binary"
 	@echo "  build-race   - Build with race detector"
 	@echo "  install      - Install to GOPATH/bin"
-	@echo "  test         - Run tests"
-	@echo "  test-coverage- Run tests with coverage"
+	@echo "  test         - Run all tests"
+	@echo "  test-unit    - Run unit tests only"
+	@echo "  test-integration - Run integration tests only"
+	@echo "  test-e2e      - Run e2e tests only"
+	@echo "  test-short    - Run tests excluding e2e"
+	@echo "  test-coverage - Run tests with coverage"
 	@echo "  lint         - Run linter"
 	@echo "  fmt          - Format code"
 	@echo "  tidy         - Tidy modules"

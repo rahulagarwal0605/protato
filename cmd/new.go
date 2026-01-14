@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 // NewCmd creates a new project (claim ownership).
@@ -24,7 +24,7 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	repoURL, err := wctx.Repo.GetRepoURL(ctx)
 	if err != nil {
 		return err
 	}
@@ -42,59 +42,46 @@ func (c *NewCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	return nil
 }
 
+
 // logProjectCreationSuccess logs success messages for each created project.
 func logProjectCreationSuccess(ctx context.Context, wctx *WorkspaceContext, paths []string) {
 	for _, p := range paths {
-		registryPath, err := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
-		if err == nil {
-			logger.Log(ctx).Info().
-				Str("project", p).
-				Str("registry_path", string(registryPath)).
-				Msg("Project created successfully")
-		} else {
-			logger.Log(ctx).Info().
-				Str("project", p).
-				Msg("Project created successfully")
+		log := logger.Log(ctx).Info().Str("project", p)
+		if registryPath, err := wctx.WS.GetRegistryPath(p); err == nil {
+			log = log.Str("registry_path", string(registryPath))
 		}
+		log.Msg("Project created successfully")
 	}
 }
 
 // validatePaths validates all project paths.
 func (c *NewCmd) validatePaths() error {
 	for _, p := range c.Paths {
-		if err := local.ValidateProjectPath(p); err != nil {
+		if err := utils.ValidateProjectPath(p); err != nil {
 			return fmt.Errorf("invalid project path %q: %w", p, err)
 		}
 	}
-	return local.ProjectsOverlap(c.Paths)
+	return utils.ProjectsOverlap(c.Paths)
 }
 
 // checkRegistryConflicts verifies that the projects can be claimed.
 func (c *NewCmd) checkRegistryConflicts(ctx context.Context, globals *GlobalOptions, wctx *WorkspaceContext, repoURL string) error {
-	if globals.RegistryURL == "" {
-		return fmt.Errorf("registry URL not configured")
-	}
-
-	reg, err := OpenRegistry(ctx, globals)
+	reg, err := OpenAndRefreshRegistry(ctx, globals)
 	if err != nil {
-		return fmt.Errorf("open registry: %w", err)
+		return err
 	}
 
-	if err := reg.Refresh(ctx); err != nil {
-		return fmt.Errorf("refresh registry: %w", err)
-	}
-
-	snapshot, err := reg.Snapshot(ctx)
+	snapshot, err := reg.GetSnapshot(ctx)
 	if err != nil {
-		return fmt.Errorf("get snapshot: %w", err)
+		return err
 	}
 
 	for _, p := range c.Paths {
-		registryPath, err := wctx.WS.RegistryProjectPath(local.ProjectPath(p))
+		registryPath, err := wctx.WS.GetRegistryPath(p)
 		if err != nil {
 			return fmt.Errorf("get registry path for %s: %w", p, err)
 		}
-		if err := CheckProjectClaim(ctx, reg, snapshot, repoURL, string(registryPath)); err != nil {
+		if err := reg.CheckProjectClaim(ctx, snapshot, repoURL, string(registryPath)); err != nil {
 			return err
 		}
 	}

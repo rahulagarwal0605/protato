@@ -9,6 +9,7 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 // PullCmd downloads projects from registry.
@@ -37,9 +38,9 @@ func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 		return err
 	}
 
-	snapshot, err := reg.Snapshot(ctx)
+	snapshot, err := reg.GetSnapshot(ctx)
 	if err != nil {
-		return fmt.Errorf("get snapshot: %w", err)
+		return err
 	}
 	logger.Log(ctx).Debug().Str("snapshot", snapshot.Short()).Msg("Using registry snapshot")
 
@@ -62,7 +63,7 @@ func (c *PullCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 }
 
 // resolveProjects determines which projects need to be pulled.
-func (c *PullCmd) resolveProjects(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash) ([]registry.ProjectPath, error) {
+func (c *PullCmd) resolveProjects(ctx context.Context, ws local.WorkspaceInterface, reg registry.CacheInterface, snapshot git.Hash) ([]registry.ProjectPath, error) {
 	projectsToPull := c.getInitialProjects(ctx, ws)
 	ownedPaths := c.buildOwnedPathsSet(ws)
 
@@ -73,14 +74,13 @@ func (c *PullCmd) resolveProjects(ctx context.Context, ws *local.Workspace, reg 
 	return c.filterOwnedProjects(projectsToPull, ownedPaths), nil
 }
 
+
 // getInitialProjects returns the initial list of projects to pull.
-func (c *PullCmd) getInitialProjects(ctx context.Context, ws *local.Workspace) []registry.ProjectPath {
+func (c *PullCmd) getInitialProjects(ctx context.Context, ws local.WorkspaceInterface) []registry.ProjectPath {
 	if len(c.Projects) > 0 {
-		projects := make([]registry.ProjectPath, len(c.Projects))
-		for i, p := range c.Projects {
-			projects[i] = registry.ProjectPath(p)
-		}
-		return projects
+		return utils.ConvertSlice(c.Projects, func(p string) registry.ProjectPath {
+			return registry.ProjectPath(p)
+		})
 	}
 
 	received, err := ws.ReceivedProjects(ctx)
@@ -89,15 +89,13 @@ func (c *PullCmd) getInitialProjects(ctx context.Context, ws *local.Workspace) [
 		return nil
 	}
 
-	projects := make([]registry.ProjectPath, len(received))
-	for i, r := range received {
-		projects[i] = registry.ProjectPath(r.Project)
-	}
-	return projects
+	return utils.ConvertSlice(received, func(r *local.ReceivedProject) registry.ProjectPath {
+		return registry.ProjectPath(r.Project)
+	})
 }
 
 // buildOwnedPathsSet builds a set of owned project paths.
-func (c *PullCmd) buildOwnedPathsSet(ws *local.Workspace) map[string]bool {
+func (c *PullCmd) buildOwnedPathsSet(ws local.WorkspaceInterface) map[string]bool {
 	ownedPaths := make(map[string]bool)
 	ownedProjects, _ := ws.OwnedProjects()
 
@@ -116,7 +114,7 @@ func (c *PullCmd) buildOwnedPathsSet(ws *local.Workspace) map[string]bool {
 }
 
 // discoverDependencies discovers and adds transitive dependencies.
-func (c *PullCmd) discoverDependencies(ctx context.Context, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) []registry.ProjectPath {
+func (c *PullCmd) discoverDependencies(ctx context.Context, reg registry.CacheInterface, snapshot git.Hash, projects []registry.ProjectPath) []registry.ProjectPath {
 	logger.Log(ctx).Info().Msg("Discovering dependencies")
 
 	allProjects, err := protoc.DiscoverDependencies(ctx, reg, snapshot, projects)
@@ -140,7 +138,7 @@ func (c *PullCmd) filterOwnedProjects(projects []registry.ProjectPath, ownedPath
 }
 
 // createPullContexts creates pull contexts for each project.
-func (c *PullCmd) createPullContexts(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, projects []registry.ProjectPath) ([]pullCtx, error) {
+func (c *PullCmd) createPullContexts(ctx context.Context, ws local.WorkspaceInterface, reg registry.CacheInterface, snapshot git.Hash, projects []registry.ProjectPath) ([]pullCtx, error) {
 	var contexts []pullCtx
 
 	for _, project := range projects {
@@ -160,7 +158,7 @@ func (c *PullCmd) createPullContexts(ctx context.Context, ws *local.Workspace, r
 }
 
 // createProjectContext creates a pull context for a single project.
-func (c *PullCmd) createProjectContext(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, project registry.ProjectPath) (pullCtx, error) {
+func (c *PullCmd) createProjectContext(ctx context.Context, ws local.WorkspaceInterface, reg registry.CacheInterface, snapshot git.Hash, project registry.ProjectPath) (pullCtx, error) {
 	filesRes, err := reg.ListProjectFiles(ctx, &registry.ListProjectFilesRequest{
 		Project:  project,
 		Snapshot: snapshot,
@@ -185,10 +183,7 @@ func (c *PullCmd) createProjectContext(ctx context.Context, ws *local.Workspace,
 
 // findFilesToDelete finds local files not in the registry.
 func (c *PullCmd) findFilesToDelete(regFiles []registry.ProjectFile, localFiles []local.ProjectFile) []string {
-	registryFileSet := make(map[string]bool)
-	for _, f := range regFiles {
-		registryFileSet[f.Path] = true
-	}
+	registryFileSet := utils.BuildFileSet(regFiles, func(f registry.ProjectFile) string { return f.Path })
 
 	var toDelete []string
 	for _, lf := range localFiles {
@@ -213,7 +208,7 @@ func (c *PullCmd) validateDeletions(ctx context.Context, pc pullCtx) error {
 }
 
 // executePull executes all pull contexts.
-func (c *PullCmd) executePull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, contexts []pullCtx) error {
+func (c *PullCmd) executePull(ctx context.Context, ws local.WorkspaceInterface, reg registry.CacheInterface, snapshot git.Hash, contexts []pullCtx) error {
 	var totalChanged, totalDeleted int
 
 	for _, pc := range contexts {
@@ -235,7 +230,7 @@ func (c *PullCmd) executePull(ctx context.Context, ws *local.Workspace, reg *reg
 }
 
 // executeProjectPull pulls a single project.
-func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, reg *registry.Cache, snapshot git.Hash, pc pullCtx) (*local.ReceiveStats, error) {
+func (c *PullCmd) executeProjectPull(ctx context.Context, ws local.WorkspaceInterface, reg registry.CacheInterface, snapshot git.Hash, pc pullCtx) (*local.ReceiveStats, error) {
 	logger.Log(ctx).Info().
 		Str("project", string(pc.project)).
 		Int("files", len(pc.files)).
@@ -259,7 +254,7 @@ func (c *PullCmd) executeProjectPull(ctx context.Context, ws *local.Workspace, r
 }
 
 // pullFiles downloads files from the registry.
-func (c *PullCmd) pullFiles(ctx context.Context, reg *registry.Cache, recv *local.ProjectReceiver, files []registry.ProjectFile) error {
+func (c *PullCmd) pullFiles(ctx context.Context, reg registry.CacheInterface, recv *local.ProjectReceiver, files []registry.ProjectFile) error {
 	for _, file := range files {
 		w, err := recv.CreateFile(file.Path)
 		if err != nil {

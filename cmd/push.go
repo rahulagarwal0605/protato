@@ -8,19 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rahulagarwal0605/protato/internal/constants"
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/protoc"
 	"github.com/rahulagarwal0605/protato/internal/registry"
-)
-
-const (
-	// Error messages that indicate non-retryable errors
-	errValidationFailed = "validation failed"
-	errProjectClaim     = "project claim"
-	errOwnership        = "ownership"
-	protoFileExt        = ".proto"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
 // PushCmd publishes owned projects to registry.
@@ -33,7 +27,7 @@ type PushCmd struct {
 // pushCtx holds the context for a push operation.
 type pushCtx struct {
 	wctx          *WorkspaceContext
-	reg           *registry.Cache
+	reg           registry.CacheInterface
 	repoURL       string
 	currentCommit git.Hash
 	ownedProjects []local.ProjectPath
@@ -73,7 +67,7 @@ func (c *PushCmd) createPushContext(ctx context.Context, globals *GlobalOptions)
 		return nil, fmt.Errorf("get owned projects: %w", err)
 	}
 
-	repoURL, err := GetRepoURL(ctx, wctx.Repo)
+	repoURL, err := wctx.Repo.GetRepoURL(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +121,7 @@ func (c *PushCmd) executePush(ctx context.Context, pctx *pushCtx) error {
 	return fmt.Errorf("push failed after %d retries", c.Retries)
 }
 
+
 // isRetryableError determines if an error should be retried.
 // Returns false for validation errors, ownership errors, and other non-transient errors.
 // Returns true for push conflicts and network errors that might succeed on retry.
@@ -137,18 +132,15 @@ func (c *PushCmd) isRetryableError(err error) bool {
 
 	errStr := err.Error()
 
-	// Validation errors are not retryable
-	if strings.Contains(errStr, errValidationFailed) {
-		return false
+	// Non-retryable error patterns
+	nonRetryablePatterns := []string{
+		constants.ErrMsgValidationFailed,
+		constants.ErrMsgCompilationFailed,
+		constants.ErrMsgProjectClaim,
+		constants.ErrMsgOwnership,
 	}
 
-	// Compile errors are not retryable
-	if strings.Contains(errStr, protoc.ErrCompilationFailed) {
-		return false
-	}
-
-	// Ownership errors are not retryable
-	if strings.Contains(errStr, errProjectClaim) || strings.Contains(errStr, errOwnership) {
+	if utils.ContainsAny(errStr, nonRetryablePatterns...) {
 		return false
 	}
 
@@ -157,15 +149,12 @@ func (c *PushCmd) isRetryableError(err error) bool {
 	return true
 }
 
+
 // attemptPush performs a single push attempt.
 func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushCtx) error {
-	if err := pctx.reg.Refresh(ctx); err != nil {
-		return fmt.Errorf("refresh registry: %w", err)
-	}
-
-	snapshot, err := pctx.reg.Snapshot(ctx)
+	snapshot, err := pctx.reg.RefreshAndGetSnapshot(ctx)
 	if err != nil {
-		return fmt.Errorf("get snapshot: %w", err)
+		return err
 	}
 
 	if err := c.checkOwnershipClaims(ctx, pctx, snapshot); err != nil {
@@ -188,14 +177,15 @@ func (c *PushCmd) attemptPush(ctx context.Context, pctx *pushCtx) error {
 	return c.pushToRemote(ctx, pctx, finalSnapshot)
 }
 
+
 // checkOwnershipClaims verifies all projects can be pushed.
 func (c *PushCmd) checkOwnershipClaims(ctx context.Context, pctx *pushCtx, snapshot git.Hash) error {
 	for _, project := range pctx.ownedProjects {
-		registryPath, err := pctx.wctx.WS.RegistryProjectPath(project)
+		registryPath, err := pctx.wctx.WS.GetRegistryPathForProject(project)
 		if err != nil {
-			return fmt.Errorf("get registry path for %s: %w", project, err)
+			return err
 		}
-		if err := CheckProjectClaim(ctx, pctx.reg, snapshot, pctx.repoURL, string(registryPath)); err != nil {
+		if err := pctx.reg.CheckProjectClaim(ctx, snapshot, pctx.repoURL, string(registryPath)); err != nil {
 			return err
 		}
 	}
@@ -208,9 +198,9 @@ func (c *PushCmd) updateProjects(ctx context.Context, pctx *pushCtx, snapshot gi
 	var registryProjects []registry.ProjectPath
 
 	for _, project := range pctx.ownedProjects {
-		registryPath, err := pctx.wctx.WS.RegistryProjectPath(project)
+		registryPath, err := pctx.wctx.WS.GetRegistryPathForProject(project)
 		if err != nil {
-			return "", nil, fmt.Errorf("get registry path for %s: %w", project, err)
+			return "", nil, err
 		}
 		registryProjects = append(registryProjects, registry.ProjectPath(registryPath))
 
@@ -291,7 +281,7 @@ func (c *PushCmd) prepareRegistryFiles(ctx context.Context, files []local.Projec
 			LocalPath: f.AbsolutePath,
 		}
 
-		if strings.HasSuffix(f.Path, protoFileExt) && serviceName != "" {
+		if strings.HasSuffix(f.Path, constants.ProtoFileExt) && serviceName != "" {
 			transformed := c.transformProtoFile(ctx, f.AbsolutePath, f.Path, ownedDir, serviceName, pulledPrefixes)
 			if transformed != nil {
 				regFile.Content = transformed
@@ -343,8 +333,16 @@ func (c *PushCmd) validateIfEnabled(ctx context.Context, pctx *pushCtx, snapshot
 	}
 
 	logger.Log(ctx).Info().Msg("Validating proto files")
-	if err := protoc.ValidateProtos(ctx, pctx.reg, snapshot, projects, ownedDir, vendorDir, workspaceRoot, serviceName); err != nil {
-		return fmt.Errorf("%s: %w", errValidationFailed, err)
+	if err := protoc.ValidateProtos(ctx, protoc.ValidateProtosConfig{
+		Cache:         pctx.reg,
+		Snapshot:      snapshot,
+		Projects:      projects,
+		OwnedDir:      ownedDir,
+		VendorDir:     vendorDir,
+		WorkspaceRoot: workspaceRoot,
+		ServiceName:   serviceName,
+	}); err != nil {
+		return fmt.Errorf("%s: %w", constants.ErrMsgValidationFailed, err)
 	}
 
 	return nil

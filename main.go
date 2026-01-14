@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/alecthomas/kong"
-	"github.com/rs/zerolog"
 
 	"github.com/rahulagarwal0605/protato/cmd"
 	"github.com/rahulagarwal0605/protato/internal/logger"
@@ -55,7 +54,7 @@ func main() {
 		parser.FatalIfErrorf(err)
 	}
 
-	configureVerbosity(cli.Verbosity)
+	logger.SetLogLevel(cli.Verbosity)
 	configureDirectory(ctx, cli.Dir)
 
 	// Execute command - Kong injects globals and ctx
@@ -130,18 +129,6 @@ func setupCLI(ctx context.Context, defaultCacheDir string) (*mainCmd, *kong.Kong
 	)
 
 	return cli, parser
-}
-
-// configureVerbosity sets the global log level based on verbosity flag.
-func configureVerbosity(verbosity int) {
-	switch verbosity {
-	case 0:
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	case 1:
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	default:
-		zerolog.SetGlobalLevel(zerolog.TraceLevel)
-	}
 }
 
 // configureDirectory changes to the requested directory if specified.

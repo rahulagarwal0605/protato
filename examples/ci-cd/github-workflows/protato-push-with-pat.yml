@@ -1,0 +1,67 @@
+name: Protato Push with PAT
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'protos/**'
+      - 'protato.yaml'
+
+env:
+  PROTATO_REGISTRY_URL: ${{ secrets.PROTATO_REGISTRY_URL }}
+  PROTATO_REGISTRY_CACHE: /tmp/protato-cache
+  PROTATO_VERSION: v0.1.0
+
+jobs:
+  push-protos:
+    name: Push Protos to Registry (PAT)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Protato
+        run: |
+          # Download and install using protato download script
+          # Uses PROTATO_VERSION from env (defaults to v0.1.0)
+          curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+          chmod +x /tmp/protato-installer
+          sudo mv /tmp/protato-installer /usr/local/bin/protato
+          
+          # Verify installation
+          protato --version
+
+      - name: Configure Git credentials (PAT)
+        run: |
+          git config --global credential.helper store
+          # PROTATO_PAT secret is required for cross-repo pushes
+          PAT_TOKEN="${{ secrets.PROTATO_PAT }}"
+          if [ -z "$PAT_TOKEN" ]; then
+            echo "❌ Error: PROTATO_PAT secret is not set"
+            echo "Please add PROTATO_PAT secret in repository settings:"
+            echo "  Settings → Secrets and variables → Actions → New repository secret"
+            echo "  Name: PROTATO_PAT"
+            echo "  Value: Your Personal Access Token"
+            exit 1
+          fi
+          echo "✅ Using PAT for cross-repository access"
+          echo "https://${PAT_TOKEN}@github.com" > ~/.git-credentials
+
+      - name: Configure Git user
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Verify workspace
+        run: protato verify
+
+      - name: Push to registry
+        run: |
+          echo "Pushing protos to registry using PAT..."
+          protato push
+
+      - name: Verify push succeeded
+        run: protato list

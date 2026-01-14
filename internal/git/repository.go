@@ -13,7 +13,28 @@ import (
 	"strings"
 
 	"github.com/rahulagarwal0605/protato/internal/logger"
+	"github.com/rahulagarwal0605/protato/internal/utils"
 )
+
+// RepositoryInterface defines the interface for Git repository operations.
+type RepositoryInterface interface {
+	Root() string
+	GitDir() string
+	IsBare() bool
+	Fetch(context.Context, FetchOptions) error
+	Push(context.Context, PushOptions) error
+	RevHash(context.Context, string) (Hash, error)
+	RevExists(context.Context, string) bool
+	ReadTree(context.Context, Treeish, ReadTreeOptions) ([]TreeEntry, error)
+	WriteObject(context.Context, io.Reader, WriteObjectOptions) (Hash, error)
+	ReadObject(context.Context, ObjectType, Hash, io.Writer) error
+	UpdateTree(context.Context, UpdateTreeRequest) (Hash, error)
+	CommitTree(context.Context, CommitTreeRequest) (Hash, error)
+	UpdateRef(context.Context, string, Hash, Hash) error
+	GetRemoteURL(context.Context, string) (string, error)
+	GetUser(context.Context) (Author, error)
+	GetRepoURL(context.Context) (string, error)
+}
 
 // Repository represents a Git repository.
 type Repository struct {
@@ -70,10 +91,10 @@ func Open(ctx context.Context, path string, opts OpenOptions) (*Repository, erro
 		// For non-bare repos, check if .git is a file (worktree)
 		if !opts.Bare {
 			if _, err := os.Stat(filepath.Join(absPath, ".git")); os.IsNotExist(err) {
-				return nil, fmt.Errorf("not a git repository: %s", path)
+				return nil, errNotGitRepository(path)
 			}
 		} else {
-			return nil, fmt.Errorf("not a git repository: %s", path)
+			return nil, errNotGitRepository(path)
 		}
 	}
 
@@ -100,6 +121,7 @@ func (r *Repository) gitCmd(args ...string) *gitCmd {
 	cmd := newGitCmd(args...)
 	if r.bare {
 		cmd.env = append(cmd.env, "GIT_DIR="+r.gitDir)
+		cmd.dir = r.gitDir // Also set working directory for bare repos
 	} else {
 		cmd.dir = r.rootDir
 	}
@@ -121,9 +143,7 @@ func (r *Repository) Fetch(ctx context.Context, opts FetchOptions) error {
 	if opts.Remote != "" {
 		args = append(args, opts.Remote)
 	}
-	for _, refspec := range opts.RefSpecs {
-		args = append(args, string(refspec))
-	}
+	args = appendRefspecs(args, opts.RefSpecs)
 
 	return r.gitCmd(args...).Run(ctx, r.exec)
 }
@@ -140,20 +160,98 @@ func (r *Repository) Push(ctx context.Context, opts PushOptions) error {
 	if opts.Remote != "" {
 		args = append(args, opts.Remote)
 	}
-	for _, refspec := range opts.RefSpecs {
-		args = append(args, string(refspec))
-	}
+	args = appendRefspecs(args, opts.RefSpecs)
 
 	return r.gitCmd(args...).Run(ctx, r.exec)
 }
 
+// trimOutputToHash converts command output to a Hash.
+func trimOutputToHash(out []byte) Hash {
+	return Hash(utils.TrimOutputToString(out))
+}
+
+// appendRefspecs appends refspecs to args slice.
+func appendRefspecs(args []string, refspecs []Refspec) []string {
+	for _, refspec := range refspecs {
+		args = append(args, string(refspec))
+	}
+	return args
+}
+
+// appendEnvToCmd appends environment variables to a git command.
+func appendEnvToCmd(cmd *gitCmd, env []string) {
+	cmd.env = append(cmd.env, env...)
+}
+
+// errNotGitRepository returns an error for invalid git repository.
+func errNotGitRepository(path string) error {
+	return fmt.Errorf("not a git repository: %s", path)
+}
+
+// logGitCommand logs a git command execution.
+func (c *gitCmd) logGitCommand(ctx context.Context, msg string) {
+	logger.Log(ctx).Debug().
+		Strs("args", c.args).
+		Str("dir", c.dir).
+		Msg(msg)
+}
+
+// executeGitOutput executes a git command and returns trimmed string output with error handling.
+func (r *Repository) executeGitOutput(ctx context.Context, operation string, args ...string) (string, error) {
+	out, err := r.gitCmd(args...).Output(ctx, r.exec)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", operation, err)
+	}
+	return utils.TrimOutputToString(out), nil
+}
+
+// executeGitOutputToHashFromArgs executes a git command and returns a Hash.
+func (r *Repository) executeGitOutputToHashFromArgs(ctx context.Context, operation string, args ...string) (Hash, error) {
+	str, err := r.executeGitOutput(ctx, operation, args...)
+	if err != nil {
+		return "", err
+	}
+	return Hash(str), nil
+}
+
+// executeGitOutputToHashWithStdin executes a git command with stdin and returns a Hash.
+func (r *Repository) executeGitOutputToHashWithStdin(ctx context.Context, cmd *gitCmd, stdin io.Reader, operation string) (Hash, error) {
+	out, err := cmd.OutputWithStdin(ctx, r.exec, stdin)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", operation, err)
+	}
+	return trimOutputToHash(out), nil
+}
+
+// executeGitOutputToHash executes a git command with optional env vars and returns a Hash.
+func (r *Repository) executeGitOutputToHash(ctx context.Context, cmd *gitCmd, env []string, operation string) (Hash, error) {
+	if len(env) > 0 {
+		appendEnvToCmd(cmd, env)
+	}
+	out, err := cmd.Output(ctx, r.exec)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", operation, err)
+	}
+	return trimOutputToHash(out), nil
+}
+
+// getGitConfig gets a git config value.
+func (r *Repository) getGitConfig(ctx context.Context, key string) (string, error) {
+	return r.executeGitOutput(ctx, fmt.Sprintf("config %s", key), "config", key)
+}
+
+// runCmdWithEnv runs a git command with environment variables and handles errors.
+func runCmdWithEnv(cmd *gitCmd, env []string, ctx context.Context, exec Execer, operation string) error {
+	appendEnvToCmd(cmd, env)
+	if err := cmd.Run(ctx, exec); err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return nil
+}
+
 // RevHash resolves a revision to a hash.
 func (r *Repository) RevHash(ctx context.Context, rev string) (Hash, error) {
-	out, err := r.gitCmd("rev-parse", rev).Output(ctx, r.exec)
-	if err != nil {
-		return "", fmt.Errorf("rev-parse %s: %w", rev, err)
-	}
-	return Hash(strings.TrimSpace(string(out))), nil
+	return r.executeGitOutputToHashFromArgs(ctx, fmt.Sprintf("rev-parse %s", rev), "rev-parse", rev)
 }
 
 // RevExists checks if a revision exists.
@@ -235,12 +333,7 @@ func (r *Repository) WriteObject(ctx context.Context, body io.Reader, opts Write
 	}
 
 	cmd := r.gitCmd(args...)
-	out, err := cmd.OutputWithStdin(ctx, r.exec, body)
-	if err != nil {
-		return "", fmt.Errorf("hash-object: %w", err)
-	}
-
-	return Hash(strings.TrimSpace(string(out))), nil
+	return r.executeGitOutputToHashWithStdin(ctx, cmd, body, "hash-object")
 }
 
 // ReadObject reads an object from the store.
@@ -265,39 +358,30 @@ func (r *Repository) UpdateTree(ctx context.Context, req UpdateTreeRequest) (Has
 	// Read current tree into index
 	if req.Tree != "" {
 		cmd := r.gitCmd("read-tree", req.Tree.String())
-		cmd.env = append(cmd.env, env...)
-		if err := cmd.Run(ctx, r.exec); err != nil {
-			return "", fmt.Errorf("read-tree: %w", err)
+		if err := runCmdWithEnv(cmd, env, ctx, r.exec, "read-tree"); err != nil {
+			return "", err
 		}
 	}
 
 	// Apply upserts
 	for _, upsert := range req.Upserts {
 		cmd := r.gitCmd("update-index", "--add", "--cacheinfo", fmt.Sprintf("%o,%s,%s", upsert.Mode, upsert.Blob, upsert.Path))
-		cmd.env = append(cmd.env, env...)
-		if err := cmd.Run(ctx, r.exec); err != nil {
-			return "", fmt.Errorf("update-index add: %w", err)
+		if err := runCmdWithEnv(cmd, env, ctx, r.exec, "update-index add"); err != nil {
+			return "", err
 		}
 	}
 
 	// Apply deletes
 	for _, del := range req.Deletes {
 		cmd := r.gitCmd("update-index", "--remove", del)
-		cmd.env = append(cmd.env, env...)
-		if err := cmd.Run(ctx, r.exec); err != nil {
-			return "", fmt.Errorf("update-index remove: %w", err)
+		if err := runCmdWithEnv(cmd, env, ctx, r.exec, "update-index remove"); err != nil {
+			return "", err
 		}
 	}
 
 	// Write tree
 	cmd := r.gitCmd("write-tree")
-	cmd.env = append(cmd.env, env...)
-	out, err := cmd.Output(ctx, r.exec)
-	if err != nil {
-		return "", fmt.Errorf("write-tree: %w", err)
-	}
-
-	return Hash(strings.TrimSpace(string(out))), nil
+	return r.executeGitOutputToHash(ctx, cmd, env, "write-tree")
 }
 
 // CommitTree creates a new commit.
@@ -311,19 +395,13 @@ func (r *Repository) CommitTree(ctx context.Context, req CommitTreeRequest) (Has
 	args = append(args, "-m", req.Message)
 
 	cmd := r.gitCmd(args...)
-	cmd.env = append(cmd.env,
-		"GIT_AUTHOR_NAME="+req.Author.Name,
-		"GIT_AUTHOR_EMAIL="+req.Author.Email,
-		"GIT_COMMITTER_NAME="+req.Author.Name,
-		"GIT_COMMITTER_EMAIL="+req.Author.Email,
-	)
-
-	out, err := cmd.Output(ctx, r.exec)
-	if err != nil {
-		return "", fmt.Errorf("commit-tree: %w", err)
+	env := []string{
+		"GIT_AUTHOR_NAME=" + req.Author.Name,
+		"GIT_AUTHOR_EMAIL=" + req.Author.Email,
+		"GIT_COMMITTER_NAME=" + req.Author.Name,
+		"GIT_COMMITTER_EMAIL=" + req.Author.Email,
 	}
-
-	return Hash(strings.TrimSpace(string(out))), nil
+	return r.executeGitOutputToHash(ctx, cmd, env, "commit-tree")
 }
 
 // UpdateRef updates a reference.
@@ -337,11 +415,7 @@ func (r *Repository) UpdateRef(ctx context.Context, ref string, hash Hash, oldHa
 
 // GetRemoteURL gets the URL of a remote.
 func (r *Repository) GetRemoteURL(ctx context.Context, remote string) (string, error) {
-	out, err := r.gitCmd("remote", "get-url", remote).Output(ctx, r.exec)
-	if err != nil {
-		return "", fmt.Errorf("get remote url: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
+	return r.executeGitOutput(ctx, "get remote url", "remote", "get-url", remote)
 }
 
 // GetUser gets the current Git user (name and email).
@@ -361,33 +435,21 @@ func (r *Repository) GetUser(ctx context.Context) (Author, error) {
 	}
 
 	// Fall back to git config
-	name, err := r.gitCmd("config", "user.name").Output(ctx, r.exec)
+	name, err := r.getGitConfig(ctx, "user.name")
 	if err != nil {
 		return author, fmt.Errorf("get user name: %w", err)
 	}
-	author.Name = strings.TrimSpace(string(name))
+	author.Name = name
 
-	email, err := r.gitCmd("config", "user.email").Output(ctx, r.exec)
+	email, err := r.getGitConfig(ctx, "user.email")
 	if err != nil {
 		return author, fmt.Errorf("get user email: %w", err)
 	}
-	author.Email = strings.TrimSpace(string(email))
+	author.Email = email
 
 	return author, nil
 }
 
-// NormalizeRemoteURL normalizes a Git URL to HTTPS format.
-func NormalizeRemoteURL(url string) string {
-	// Convert SSH URLs to HTTPS
-	if strings.HasPrefix(url, "git@") {
-		// git@github.com:org/repo.git -> https://github.com/org/repo.git
-		url = strings.Replace(url, ":", "/", 1)
-		url = strings.Replace(url, "git@", "https://", 1)
-	}
-	// Remove .git suffix if present
-	url = strings.TrimSuffix(url, ".git")
-	return url
-}
 
 // gitCmd is a helper for executing git commands.
 type gitCmd struct {
@@ -429,19 +491,13 @@ func (c *gitCmd) toExecCmd(ctx context.Context) *exec.Cmd {
 
 // Run executes the command.
 func (c *gitCmd) Run(ctx context.Context, e Execer) error {
-	logger.Log(ctx).Debug().
-		Strs("args", c.args).
-		Str("dir", c.dir).
-		Msg("Executing git command")
+	c.logGitCommand(ctx, "Executing git command")
 	return e.Run(c.toExecCmd(ctx))
 }
 
 // Output executes the command and returns its output.
 func (c *gitCmd) Output(ctx context.Context, e Execer) ([]byte, error) {
-	logger.Log(ctx).Debug().
-		Strs("args", c.args).
-		Str("dir", c.dir).
-		Msg("Executing git command")
+	c.logGitCommand(ctx, "Executing git command")
 	return e.Output(c.toExecCmd(ctx))
 }
 
@@ -449,10 +505,7 @@ func (c *gitCmd) Output(ctx context.Context, e Execer) ([]byte, error) {
 func (c *gitCmd) OutputWithStdin(ctx context.Context, e Execer, stdin io.Reader) ([]byte, error) {
 	cmd := c.toExecCmd(ctx)
 	cmd.Stdin = stdin
-	logger.Log(ctx).Debug().
-		Strs("args", c.args).
-		Str("dir", c.dir).
-		Msg("Executing git command with stdin")
+	c.logGitCommand(ctx, "Executing git command with stdin")
 	return e.Output(cmd)
 }
 
@@ -460,9 +513,15 @@ func (c *gitCmd) OutputWithStdin(ctx context.Context, e Execer, stdin io.Reader)
 func (c *gitCmd) RunWithStdout(ctx context.Context, e Execer, stdout io.Writer) error {
 	cmd := c.toExecCmd(ctx)
 	cmd.Stdout = stdout
-	logger.Log(ctx).Debug().
-		Strs("args", c.args).
-		Str("dir", c.dir).
-		Msg("Executing git command with stdout")
+	c.logGitCommand(ctx, "Executing git command with stdout")
 	return e.Run(cmd)
+}
+
+// GetRepoURL returns the normalized remote URL for the repository.
+func (r *Repository) GetRepoURL(ctx context.Context) (string, error) {
+	repoURL, err := r.GetRemoteURL(ctx, "origin")
+	if err != nil {
+		return "", fmt.Errorf("get remote URL: %w", err)
+	}
+	return utils.NormalizeGitURL(repoURL), nil
 }

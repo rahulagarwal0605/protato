@@ -1,0 +1,16 @@
+# Inspect Configuration
+# Demonstrates inspection commands
+
+service: inspect-demo
+
+directories:
+  owned: protos
+  vendor: vendor-proto
+
+# Auto-discovery settings
+# When auto_discover is true, projects are automatically discovered from the owned directory
+# No need to manually specify projects
+auto_discover: true
+
+ignores:
+  - '**/BUILD'

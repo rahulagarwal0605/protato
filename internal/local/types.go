@@ -2,8 +2,10 @@
 package local
 
 import (
-	"errors"
+	"hash"
+	"os"
 
+	"github.com/rahulagarwal0605/protato/internal/errors"
 	"github.com/rahulagarwal0605/protato/internal/git"
 )
 
@@ -38,20 +40,11 @@ func DefaultDirectoryConfig() DirectoryConfig {
 	}
 }
 
-var (
-	// ErrOwnedDirNotSet is returned when OwnedDir is called but not configured.
-	ErrOwnedDirNotSet = errors.New("owned directory not configured")
-	// ErrVendorDirNotSet is returned when VendorDir is called but not configured.
-	ErrVendorDirNotSet = errors.New("vendor directory not configured")
-	// ErrServiceNotConfigured is returned when RegistryProjectPath is called but service is not configured.
-	ErrServiceNotConfigured = errors.New("service name not configured")
-)
-
 // OwnedDir returns the owned directory.
 // If the configured directory is ".", returns "" (empty string) to represent root.
 func (c *Config) OwnedDir() (string, error) {
 	if c.Directories.Owned == "" {
-		return "", ErrOwnedDirNotSet
+		return "", errors.ErrOwnedDirNotSet
 	}
 	// Treat "." as root directory (empty string)
 	if c.Directories.Owned == "." {
@@ -64,7 +57,7 @@ func (c *Config) OwnedDir() (string, error) {
 // If the configured directory is ".", returns "" (empty string) to represent root.
 func (c *Config) VendorDir() (string, error) {
 	if c.Directories.Vendor == "" {
-		return "", ErrVendorDirNotSet
+		return "", errors.ErrVendorDirNotSet
 	}
 	// Treat "." as root directory (empty string)
 	if c.Directories.Vendor == "." {
@@ -100,4 +93,22 @@ type ReceiveProjectRequest struct {
 type ReceiveStats struct {
 	FilesChanged int
 	FilesDeleted int
+}
+
+// ProjectReceiver handles receiving files for a project.
+type ProjectReceiver struct {
+	ws          WorkspaceInterface
+	project     ProjectPath
+	projectRoot string
+	snapshot    git.Hash
+	changed     int
+	deleted     int
+}
+
+// ProjectFileWriter handles writing a project file.
+type ProjectFileWriter struct {
+	file         *os.File
+	hash         hash.Hash
+	existingHash []byte
+	onClose      func(changed bool)
 }

@@ -1,0 +1,78 @@
+name: Protato Push with Deploy Key
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'protos/**'
+      - 'protato.yaml'
+
+env:
+  PROTATO_REGISTRY_CACHE: /tmp/protato-cache
+  PROTATO_VERSION: v0.1.0
+
+jobs:
+  push-protos:
+    name: Push Protos to Registry (Deploy Key)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Protato
+        run: |
+          # Download and install using protato download script
+          # Uses PROTATO_VERSION from env (defaults to v0.1.0)
+          curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+          chmod +x /tmp/protato-installer
+          sudo mv /tmp/protato-installer /usr/local/bin/protato
+          
+          # Verify installation
+          protato --version
+
+      - name: Setup Deploy Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROTATO_DEPLOY_KEY }}
+
+      - name: Configure SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Configure Git user
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Convert registry URL to SSH format
+        id: convert-url
+        run: |
+          REGISTRY_URL="${{ secrets.PROTATO_REGISTRY_URL }}"
+          if [[ "$REGISTRY_URL" == https://github.com/* ]]; then
+            SSH_URL=$(echo "$REGISTRY_URL" | sed 's|https://github.com/|git@github.com:|')
+            echo "ssh_url=$SSH_URL" >> $GITHUB_OUTPUT
+          else
+            echo "ssh_url=$REGISTRY_URL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify workspace
+        run: protato verify
+        env:
+          PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
+
+      - name: Push to registry
+        run: |
+          echo "Pushing protos to registry using Deploy Key..."
+          protato push
+        env:
+          PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
+
+      - name: Verify push succeeded
+        run: protato list
+        env:
+          PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
