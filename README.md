@@ -59,33 +59,33 @@ Download a specific version directly from [GitHub releases](https://github.com/r
 
 **macOS (Apple Silicon):**
 ```bash
-curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.3.0/protato-darwin-arm64.tar.gz | tar xz
+curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.0.0/protato-darwin-arm64.tar.gz | tar xz
 chmod +x protato
 sudo mv protato /usr/local/bin/
 ```
 
 **macOS (Intel):**
 ```bash
-curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.3.0/protato-darwin-amd64.tar.gz | tar xz
+curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.0.0/protato-darwin-amd64.tar.gz | tar xz
 chmod +x protato
 sudo mv protato /usr/local/bin/
 ```
 
 **Linux (amd64):**
 ```bash
-curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.3.0/protato-linux-amd64.tar.gz | tar xz
+curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.0.0/protato-linux-amd64.tar.gz | tar xz
 chmod +x protato
 sudo mv protato /usr/local/bin/
 ```
 
 **Linux (arm64):**
 ```bash
-curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.3.0/protato-linux-arm64.tar.gz | tar xz
+curl -fsSL https://github.com/rahulagarwal0605/protato/releases/download/v1.0.0/protato-linux-arm64.tar.gz | tar xz
 chmod +x protato
 sudo mv protato /usr/local/bin/
 ```
 
-Replace `v1.3.0` with your desired version. See all available versions at [releases](https://github.com/rahulagarwal0605/protato/releases).
+Replace `v1.0.0` with your desired version. See all available versions at [releases](https://github.com/rahulagarwal0605/protato/releases).
 
 ### From Source
 
