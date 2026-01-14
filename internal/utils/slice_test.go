@@ -266,3 +266,68 @@ func TestSliceToMapWithValue(t *testing.T) {
 		})
 	}
 }
+
+func TestSliceToMap(t *testing.T) {
+	type item struct {
+		id   string
+		name string
+	}
+
+	tests := []struct {
+		name     string
+		items    []item
+		keyFunc  func(item) string
+		wantLen  int
+		wantKeys []string
+	}{
+		{
+			name:     "empty slice",
+			items:    []item{},
+			keyFunc:  func(i item) string { return i.id },
+			wantLen:  0,
+			wantKeys: []string{},
+		},
+		{
+			name:     "single item",
+			items:    []item{{id: "1", name: "a"}},
+			keyFunc:  func(i item) string { return i.id },
+			wantLen:  1,
+			wantKeys: []string{"1"},
+		},
+		{
+			name:     "multiple items",
+			items:    []item{{id: "1", name: "a"}, {id: "2", name: "b"}, {id: "3", name: "c"}},
+			keyFunc:  func(i item) string { return i.id },
+			wantLen:  3,
+			wantKeys: []string{"1", "2", "3"},
+		},
+		{
+			name:     "with duplicates",
+			items:    []item{{id: "1", name: "a"}, {id: "1", name: "b"}},
+			keyFunc:  func(i item) string { return i.id },
+			wantLen:  1,
+			wantKeys: []string{"1"},
+		},
+		{
+			name:     "custom key function",
+			items:    []item{{id: "1", name: "alice"}, {id: "2", name: "bob"}},
+			keyFunc:  func(i item) string { return i.name },
+			wantLen:  2,
+			wantKeys: []string{"alice", "bob"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SliceToMap(tt.items, tt.keyFunc)
+			if len(got) != tt.wantLen {
+				t.Errorf("SliceToMap() length = %v, want %v", len(got), tt.wantLen)
+			}
+			for _, key := range tt.wantKeys {
+				if !got[key] {
+					t.Errorf("SliceToMap() missing key %s", key)
+				}
+			}
+		})
+	}
+}

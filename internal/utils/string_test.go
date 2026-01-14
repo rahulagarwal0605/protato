@@ -432,3 +432,51 @@ func TestReplaceStringInLine(t *testing.T) {
 		})
 	}
 }
+
+func TestTrimOutputToString(t *testing.T) {
+	tests := []struct {
+		name string
+		out  []byte
+		want string
+	}{
+		{
+			name: "trim newline",
+			out:  []byte("output\n"),
+			want: "output",
+		},
+		{
+			name: "trim spaces and newline",
+			out:  []byte("  output  \n"),
+			want: "output",
+		},
+		{
+			name: "trim multiple newlines",
+			out:  []byte("output\n\n"),
+			want: "output",
+		},
+		{
+			name: "no trimming needed",
+			out:  []byte("output"),
+			want: "output",
+		},
+		{
+			name: "empty output",
+			out:  []byte(""),
+			want: "",
+		},
+		{
+			name: "only whitespace",
+			out:  []byte("   \n  \t  "),
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TrimOutputToString(tt.out)
+			if got != tt.want {
+				t.Errorf("TrimOutputToString() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
