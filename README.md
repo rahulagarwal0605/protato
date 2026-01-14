@@ -3,7 +3,8 @@
 [![Go Version](https://img.shields.io/badge/go-1.24+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rahulagarwal0605/protato)](https://goreportcard.com/report/github.com/rahulagarwal0605/protato)
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/rahulagarwal0605/protato/test.yml?branch=main)](https://github.com/rahulagarwal0605/protato/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/rahulagarwal0605/protato/build.yml?branch=main&label=build)](https://github.com/rahulagarwal0605/protato/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/rahulagarwal0605/protato/test.yml?branch=main&label=tests)](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml)
 
 A CLI tool for managing protobuf definitions across distributed Git repositories.
 
