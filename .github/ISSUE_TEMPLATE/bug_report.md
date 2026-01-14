@@ -28,7 +28,7 @@ What actually happened.
 
 - **OS**: [e.g., macOS 14.0, Ubuntu 22.04]
 - **Go Version**: [e.g., go1.24.0]
-- **Protato Version**: [e.g., v0.1.0 or commit hash]
+- **Protato Version**: [e.g., v1.3.0 or commit hash]
 - **Registry Type**: [e.g., GitHub, GitLab, local file://]
 
 ## Logs

@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Test
+  unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -38,23 +38,21 @@ jobs:
       - name: Run unit tests
         run: make test-unit
 
-      - name: Run integration tests
-        run: make test-integration
-
       - name: Run tests with coverage
+        if: matrix.go-version == '1.24'
         run: make test-coverage
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
         if: matrix.go-version == '1.24'
+        uses: codecov/codecov-action@v4
         with:
           file: ./coverage.out
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
 
-  test-short:
-    name: Test (Short - Excluding E2E)
+  integration:
+    name: Integration Tests
     runs-on: ubuntu-latest
     
     steps:
@@ -77,14 +75,12 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests (excluding e2e)
-        run: make test-short
+      - name: Run integration tests
+        run: make test-integration
 
-  test-e2e:
-    name: Test (E2E)
+  e2e:
+    name: E2E Tests
     runs-on: ubuntu-latest
-    # E2E tests may be slower and require more setup
-    # Consider running only on main branch or schedule
     
     steps:
       - name: Checkout code

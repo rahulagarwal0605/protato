@@ -182,7 +182,7 @@ Edit your copied workflow file:
 
 ### Step 4: Version Management
 
-**Important**: All workflows pin Protato to a specific version (`v0.1.0` by default) for reproducibility.
+**Important**: All workflows pin Protato to a specific version (`v1.3.0` by default) for reproducibility.
 
 **To use a different version**, you have two options:
 
@@ -335,7 +335,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          PROTATO_VERSION="${PROTATO_VERSION:-v0.1.0}"
+          PROTATO_VERSION="${PROTATO_VERSION:-v1.3.0}"
           curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
           chmod +x /tmp/protato-installer
           sudo mv /tmp/protato-installer /usr/local/bin/protato
@@ -361,7 +361,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
       - run: |
-          PROTATO_VERSION="${PROTATO_VERSION:-v0.1.0}"
+          PROTATO_VERSION="${PROTATO_VERSION:-v1.3.0}"
           go install github.com/rahulagarwal0605/protato@${PROTATO_VERSION}
       - run: protato verify
         env:
