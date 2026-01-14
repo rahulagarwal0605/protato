@@ -6,7 +6,8 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/utils"
 )
 
-func TestNewCmd_ValidatePaths(t *testing.T) {
+// TestNewCmdValidatePaths tests the validatePaths method directly
+func TestNewCmdValidatePaths(t *testing.T) {
 	tests := []struct {
 		name    string
 		paths   []string
@@ -35,6 +36,36 @@ func TestNewCmd_ValidatePaths(t *testing.T) {
 		{
 			name:    "overlapping paths",
 			paths:   []string{"team/service", "team/service/v1"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &NewCmd{Paths: tt.paths}
+			err := cmd.validatePaths()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePaths() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestNewCmdValidatePathsLogic tests the validation logic (same as before, for backwards compatibility)
+func TestNewCmdValidatePathsLogic(t *testing.T) {
+	tests := []struct {
+		name    string
+		paths   []string
+		wantErr bool
+	}{
+		{
+			name:    "valid paths",
+			paths:   []string{"team/service", "team/service2"},
+			wantErr: false,
+		},
+		{
+			name:    "empty path",
+			paths:   []string{""},
 			wantErr: true,
 		},
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/rahulagarwal0605/protato/internal/git"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
+	"github.com/rs/zerolog"
 )
 
 // mockCache is a mock implementation of CacheInterface for testing
@@ -502,5 +503,448 @@ func TestRegistryResolver_registerProject(t *testing.T) {
 	}
 	if projects[0] != project {
 		t.Errorf("DiscoveredProjects()[0] = %v, want %v", projects[0], project)
+	}
+}
+
+func TestExtractImportPathFromLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "double quote import",
+			line: `import "common/address.proto";`,
+			want: "common/address.proto",
+		},
+		{
+			name: "single quote import",
+			line: `import 'common/address.proto';`,
+			want: "common/address.proto",
+		},
+		{
+			name: "import with leading whitespace",
+			line: `  import "common/address.proto";`,
+			want: "common/address.proto",
+		},
+		{
+			name: "not an import line",
+			line: `syntax = "proto3";`,
+			want: "",
+		},
+		{
+			name: "package line",
+			line: `package test;`,
+			want: "",
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: "",
+		},
+		{
+			name: "import with google protobuf",
+			line: `import "google/protobuf/timestamp.proto";`,
+			want: "google/protobuf/timestamp.proto",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractImportPathFromLine(tt.line)
+			if got != tt.want {
+				t.Errorf("extractImportPathFromLine() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransformImports(t *testing.T) {
+	tests := []struct {
+		name          string
+		content       string
+		ownedDir      string
+		servicePrefix string
+		want          string
+	}{
+		{
+			name:          "transform import with owned dir",
+			content:       `import "proto/common/address.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `import "my-service/common/address.proto";`,
+		},
+		{
+			name:          "no transform for google imports",
+			content:       `import "google/protobuf/timestamp.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `import "google/protobuf/timestamp.proto";`,
+		},
+		{
+			name:          "no transform when already has service prefix",
+			content:       `import "my-service/common/address.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `import "my-service/common/address.proto";`,
+		},
+		{
+			name:          "empty service prefix returns unchanged",
+			content:       `import "proto/common/address.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "",
+			want:          `import "proto/common/address.proto";`,
+		},
+		{
+			name:          "transform without owned dir",
+			content:       `import "common/address.proto";`,
+			ownedDir:      "",
+			servicePrefix: "my-service",
+			want:          `import "my-service/common/address.proto";`,
+		},
+		{
+			name:          "multiple imports",
+			content:       "import \"proto/common/address.proto\";\nimport \"proto/common/types.proto\";",
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          "import \"my-service/common/address.proto\";\nimport \"my-service/common/types.proto\";",
+		},
+		{
+			name:          "non-import lines unchanged",
+			content:       "syntax = \"proto3\";\npackage test;",
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          "syntax = \"proto3\";\npackage test;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TransformImports([]byte(tt.content), tt.ownedDir, tt.servicePrefix)
+			if string(got) != tt.want {
+				t.Errorf("TransformImports() = %v, want %v", string(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestTransformImportsWithPulled(t *testing.T) {
+	tests := []struct {
+		name           string
+		content        string
+		ownedDir       string
+		servicePrefix  string
+		pulledPrefixes []string
+		want           string
+	}{
+		{
+			name:           "transform owned import",
+			content:        `import "proto/common/address.proto";`,
+			ownedDir:       "proto",
+			servicePrefix:  "my-service",
+			pulledPrefixes: nil,
+			want:           `import "my-service/common/address.proto";`,
+		},
+		{
+			name:           "strip ownedDir for pulled project",
+			content:        `import "proto/other-svc/common/types.proto";`,
+			ownedDir:       "proto",
+			servicePrefix:  "my-service",
+			pulledPrefixes: []string{"other-svc"},
+			want:           `import "other-svc/common/types.proto";`,
+		},
+		{
+			name:           "no transform for google imports",
+			content:        `import "google/protobuf/timestamp.proto";`,
+			ownedDir:       "proto",
+			servicePrefix:  "my-service",
+			pulledPrefixes: []string{"other-svc"},
+			want:           `import "google/protobuf/timestamp.proto";`,
+		},
+		{
+			name:           "mixed imports",
+			content:        "import \"proto/common/address.proto\";\nimport \"proto/other-svc/types.proto\";",
+			ownedDir:       "proto",
+			servicePrefix:  "my-service",
+			pulledPrefixes: []string{"other-svc"},
+			want:           "import \"my-service/common/address.proto\";\nimport \"other-svc/types.proto\";",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TransformImportsWithPulled([]byte(tt.content), tt.ownedDir, tt.servicePrefix, tt.pulledPrefixes)
+			if string(got) != tt.want {
+				t.Errorf("TransformImportsWithPulled() = %v, want %v", string(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestTransformImportLine(t *testing.T) {
+	tests := []struct {
+		name           string
+		line           string
+		ownedDir       string
+		servicePrefix  string
+		pulledPrefixes []string
+		want           string
+	}{
+		{
+			name:          "transform owned import",
+			line:          `import "proto/common/address.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `import "my-service/common/address.proto";`,
+		},
+		{
+			name:          "no transform for non-import",
+			line:          `syntax = "proto3";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `syntax = "proto3";`,
+		},
+		{
+			name:          "no transform for google",
+			line:          `import "google/protobuf/timestamp.proto";`,
+			ownedDir:      "proto",
+			servicePrefix: "my-service",
+			want:          `import "google/protobuf/timestamp.proto";`,
+		},
+		{
+			name:           "strip ownedDir for pulled",
+			line:           `import "proto/other-svc/types.proto";`,
+			ownedDir:       "proto",
+			servicePrefix:  "my-service",
+			pulledPrefixes: []string{"other-svc"},
+			want:           `import "other-svc/types.proto";`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := transformImportLine(tt.line, tt.ownedDir, tt.servicePrefix, tt.pulledPrefixes)
+			if got != tt.want {
+				t.Errorf("transformImportLine() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractPathToTransform(t *testing.T) {
+	tests := []struct {
+		name       string
+		importPath string
+		ownedDir   string
+		want       string
+	}{
+		{
+			name:       "with owned dir",
+			importPath: "proto/common/address.proto",
+			ownedDir:   "proto",
+			want:       "common/address.proto",
+		},
+		{
+			name:       "without owned dir",
+			importPath: "common/address.proto",
+			ownedDir:   "",
+			want:       "common/address.proto",
+		},
+		{
+			name:       "owned dir not in path returns empty",
+			importPath: "common/address.proto",
+			ownedDir:   "proto",
+			want:       "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractPathToTransform(tt.importPath, tt.ownedDir)
+			if got != tt.want {
+				t.Errorf("extractPathToTransform() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsPulledProject(t *testing.T) {
+	tests := []struct {
+		name           string
+		pathToTransform string
+		pulledPrefixes []string
+		want           bool
+	}{
+		{
+			name:           "is pulled project",
+			pathToTransform: "other-svc/common/types.proto",
+			pulledPrefixes: []string{"other-svc", "payment-svc"},
+			want:           true,
+		},
+		{
+			name:           "not pulled project",
+			pathToTransform: "common/address.proto",
+			pulledPrefixes: []string{"other-svc"},
+			want:           false,
+		},
+		{
+			name:           "empty prefixes",
+			pathToTransform: "common/address.proto",
+			pulledPrefixes: nil,
+			want:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPulledProject(tt.pathToTransform, tt.pulledPrefixes)
+			if got != tt.want {
+				t.Errorf("isPulledProject() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlePulledProject(t *testing.T) {
+	tests := []struct {
+		name            string
+		line            string
+		importPath      string
+		pathToTransform string
+		ownedDir        string
+		want            string
+	}{
+		{
+			name:            "with owned dir",
+			line:            `import "proto/other-svc/types.proto";`,
+			importPath:      "proto/other-svc/types.proto",
+			pathToTransform: "other-svc/types.proto",
+			ownedDir:        "proto",
+			want:            `import "other-svc/types.proto";`,
+		},
+		{
+			name:            "without owned dir",
+			line:            `import "other-svc/types.proto";`,
+			importPath:      "other-svc/types.proto",
+			pathToTransform: "other-svc/types.proto",
+			ownedDir:        "",
+			want:            `import "other-svc/types.proto";`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := handlePulledProject(tt.line, tt.importPath, tt.pathToTransform, tt.ownedDir)
+			if got != tt.want {
+				t.Errorf("handlePulledProject() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransformOwnedProject(t *testing.T) {
+	tests := []struct {
+		name            string
+		line            string
+		importPath      string
+		pathToTransform string
+		servicePrefix   string
+		want            string
+	}{
+		{
+			name:            "transform owned",
+			line:            `import "common/address.proto";`,
+			importPath:      "common/address.proto",
+			pathToTransform: "common/address.proto",
+			servicePrefix:   "my-service",
+			want:            `import "my-service/common/address.proto";`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := transformOwnedProject(tt.line, tt.importPath, tt.pathToTransform, tt.servicePrefix)
+			if got != tt.want {
+				t.Errorf("transformOwnedProject() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractImportsFromContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name:    "single import",
+			content: `import "common/address.proto";`,
+			want:    []string{"common/address.proto"},
+		},
+		{
+			name:    "multiple imports",
+			content: "import \"common/address.proto\";\nimport \"common/types.proto\";",
+			want:    []string{"common/address.proto", "common/types.proto"},
+		},
+		{
+			name:    "google imports filtered",
+			content: "import \"google/protobuf/timestamp.proto\";\nimport \"common/address.proto\";",
+			want:    []string{"common/address.proto"},
+		},
+		{
+			name:    "no imports",
+			content: "syntax = \"proto3\";\npackage test;",
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractImportsFromContent([]byte(tt.content))
+			if len(got) != len(tt.want) {
+				t.Errorf("extractImportsFromContent() length = %v, want %v", len(got), len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("extractImportsFromContent()[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCompileError_Error(t *testing.T) {
+	err := &CompileError{Message: "syntax error at line 10"}
+	got := err.Error()
+	if got != "syntax error at line 10" {
+		t.Errorf("CompileError.Error() = %v, want \"syntax error at line 10\"", got)
+	}
+}
+
+func TestLogReporterFailed(t *testing.T) {
+	log := zerolog.New(io.Discard)
+	rep := &LogReporter{Log: &log, failed: false}
+
+	if rep.Failed() {
+		t.Error("Failed() = true, want false")
+	}
+
+	rep.failed = true
+	if !rep.Failed() {
+		t.Error("Failed() = false, want true")
+	}
+}
+
+func TestLogReporterInit(t *testing.T) {
+	log := zerolog.New(io.Discard)
+	rep := &LogReporter{Log: &log}
+
+	if rep.Log == nil {
+		t.Error("LogReporter.Log should not be nil")
+	}
+	if rep.failed {
+		t.Error("LogReporter.failed should be false by default")
 	}
 }
