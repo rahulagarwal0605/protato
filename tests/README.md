@@ -1,6 +1,18 @@
 # Protato Test Suite
 
+[![Go Test](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml/badge.svg)](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](./coverage.html)
+
 This directory contains integration and end-to-end tests for the Protato project. Unit tests are located beside their source files following Go best practices.
+
+## Overview
+
+The Protato test suite follows a three-tier testing strategy:
+- **Unit Tests**: Fast, isolated tests beside source files
+- **Integration Tests**: Component interaction tests
+- **E2E Tests**: Complete workflow tests
+
+All tests are designed to run reliably in CI/CD environments and support parallel execution.
 
 ## Test Structure
 
@@ -166,9 +178,45 @@ When adding new functionality:
 - **Integration tests**: Cover all major workflows
 - **E2E tests**: Cover critical user paths
 
+## Test Statistics
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Unit Tests | 16 files | ✅ Passing |
+| Integration Tests | 9 files | ✅ Passing |
+| E2E Tests | 1 file | ✅ Passing |
+| Coverage | >80% | ✅ Target Met |
+
 ## Current Status
 
 - ✅ **16 unit test files** - All passing, located beside source files
-- ✅ **5 integration test files** - Component interaction tests
+- ✅ **9 integration test files** - Component interaction tests
 - ✅ **1 e2e test file** - Complete workflow tests
 - ✅ **Comprehensive coverage** - Major functionality covered
+- ✅ **Parallel execution** - All tests support parallel execution
+
+## Troubleshooting
+
+### Tests Failing Locally
+
+```bash
+# Run with verbose output
+go test -v ./tests/integration/...
+
+# Run specific test
+go test -v ./tests/integration -run TestRegistryCache_Snapshot
+
+# Check for race conditions
+go test -race ./...
+```
+
+### CI/CD Issues
+
+- Ensure Go version matches CI (1.24+)
+- Check for environment-specific issues
+- Review test logs for detailed error messages
+
+## Related Documentation
+
+- [Contributing Guide](../CONTRIBUTING.md#testing-guidelines) - Testing guidelines for contributors
+- [Architecture Docs](../docs/ARCHITECTURE.md#testing-strategy) - Testing strategy overview

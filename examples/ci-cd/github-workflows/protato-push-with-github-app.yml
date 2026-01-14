@@ -1,0 +1,67 @@
+name: Protato Push with GitHub App
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'protos/**'
+      - 'protato.yaml'
+
+env:
+  PROTATO_REGISTRY_URL: ${{ secrets.PROTATO_REGISTRY_URL }}
+  PROTATO_REGISTRY_CACHE: /tmp/protato-cache
+  PROTATO_VERSION: v0.1.0
+
+jobs:
+  push-protos:
+    name: Push Protos to Registry (GitHub App)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Protato
+        run: |
+          # Download and install using protato download script
+          # Uses PROTATO_VERSION from env (defaults to v0.1.0)
+          curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+          chmod +x /tmp/protato-installer
+          sudo mv /tmp/protato-installer /usr/local/bin/protato
+          
+          # Verify installation
+          protato --version
+
+      - name: Authenticate with GitHub App
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PROTATO_GITHUB_APP_ID }}
+          private-key: ${{ secrets.PROTATO_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Configure Git credentials (GitHub App)
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com" > ~/.git-credentials
+
+      - name: Configure Git user
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Verify workspace
+        run: protato verify
+
+      - name: Push to registry
+        run: |
+          echo "Pushing protos to registry using GitHub App..."
+          protato push
+
+      - name: Verify push succeeded
+        run: protato list

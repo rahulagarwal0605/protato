@@ -1,0 +1,25 @@
+# Protato Workspace Configuration
+# Workflow Example (Manual Project Specification)
+
+# Service name for registry namespacing
+service: payments-service
+
+# Directory configuration
+directories:
+  owned: protos
+  vendor: vendor-proto
+
+# Auto-discovery settings
+# When auto_discover is false, projects must be explicitly specified below
+auto_discover: false
+
+# Explicit project specification
+# Without auto-discovery, you must manually list all projects you own
+projects:
+  - payments/api
+
+# Ignore patterns (files to exclude)
+ignores:
+  - '**/BUILD'
+  - '**/*.swp'
+  - '**/.git/**'
