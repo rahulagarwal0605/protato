@@ -1,7 +1,7 @@
 # Protato Test Suite
 
 [![Go Test](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml/badge.svg)](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml)
-[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](./coverage.html)
+[![Coverage](https://img.shields.io/badge/coverage-46.9%25-yellow)](#test-coverage)
 
 This directory contains integration and end-to-end tests for the Protato project. Unit tests are located beside their source files following Go best practices.
 
@@ -87,12 +87,12 @@ Unit tests focus on testing individual functions and methods in isolation. They 
 **Location:** `cmd/*_test.go`, `internal/*/*_test.go`
 
 **Coverage:**
-- Utility functions (`internal/utils/`)
-- Workspace operations (`internal/local/`)
-- Git operations (`internal/git/`)
-- Registry operations (`internal/registry/`)
-- Protoc operations (`internal/protoc/`)
-- Command validation (`cmd/`)
+- Utility functions (`internal/utils/`) - **95.2%** ✅
+- Workspace operations (`internal/local/`) - **80.9%** ✅
+- Git operations (`internal/git/`) - **87.2%** ✅
+- Registry operations (`internal/registry/`) - **81.1%** ✅
+- Protoc operations (`internal/protoc/`) - **32.0%** ⚠️
+- Command validation (`cmd/`) - **5.5%** ⚠️
 
 **Example:**
 ```go
@@ -172,11 +172,30 @@ When adding new functionality:
 3. **E2E tests**: Add tests in `tests/e2e/` for complete workflows
 4. **Test helpers**: Add reusable utilities to `testhelpers/` (but avoid import cycles)
 
-## Test Coverage Goals
+## Test Coverage {#test-coverage}
 
-- **Unit tests**: >80% coverage for utility and core logic
-- **Integration tests**: Cover all major workflows
-- **E2E tests**: Cover critical user paths
+### Overall Coverage: **46.9%**
+
+### Coverage by Package
+
+| Package | Coverage | Status |
+|---------|----------|--------|
+| `internal/utils` | 95.2% | ✅ Excellent |
+| `internal/git` | 87.2% | ✅ Excellent |
+| `internal/registry` | 81.1% | ✅ Good |
+| `internal/local` | 80.9% | ✅ Good |
+| `internal/protoc` | 32.0% | ⚠️ Needs improvement |
+| `cmd` | 5.5% | ⚠️ Needs improvement |
+| `internal/logger` | 100.0% | ✅ Perfect |
+
+### Coverage Goals
+
+- **Core utilities** (`internal/utils`): ✅ **95.2%** - Exceeds target
+- **Git operations** (`internal/git`): ✅ **87.2%** - Exceeds target
+- **Registry operations** (`internal/registry`): ✅ **81.1%** - Meets target
+- **Workspace operations** (`internal/local`): ✅ **80.9%** - Meets target
+- **Protoc operations** (`internal/protoc`): ⚠️ **32.0%** - Below target
+- **Command layer** (`cmd`): ⚠️ **5.5%** - Below target
 
 ## Test Statistics
 
@@ -185,15 +204,21 @@ When adding new functionality:
 | Unit Tests | 16 files | ✅ Passing |
 | Integration Tests | 9 files | ✅ Passing |
 | E2E Tests | 1 file | ✅ Passing |
-| Coverage | >80% | ✅ Target Met |
+| Overall Coverage | 46.9% | ⚠️ Improving |
 
 ## Current Status
 
 - ✅ **16 unit test files** - All passing, located beside source files
 - ✅ **9 integration test files** - Component interaction tests
 - ✅ **1 e2e test file** - Complete workflow tests
-- ✅ **Comprehensive coverage** - Major functionality covered
+- ⚠️ **Overall coverage: 46.9%** - Core packages well covered, command layer needs improvement
 - ✅ **Parallel execution** - All tests support parallel execution
+
+### Coverage Highlights
+
+- **Excellent coverage** (>85%): `internal/utils` (95.2%), `internal/git` (87.2%)
+- **Good coverage** (>80%): `internal/registry` (81.1%), `internal/local` (80.9%)
+- **Needs improvement**: `internal/protoc` (32.0%), `cmd` (5.5%)
 
 ## Troubleshooting
 

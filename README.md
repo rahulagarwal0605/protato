@@ -5,6 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/rahulagarwal0605/protato)](https://goreportcard.com/report/github.com/rahulagarwal0605/protato)
 [![Build](https://img.shields.io/github/actions/workflow/status/rahulagarwal0605/protato/build.yml?branch=main&label=build)](https://github.com/rahulagarwal0605/protato/actions/workflows/build.yml)
 [![Tests](https://img.shields.io/github/actions/workflow/status/rahulagarwal0605/protato/test.yml?branch=main&label=tests)](https://github.com/rahulagarwal0605/protato/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-46.9%25-yellow)](./tests/README.md#test-coverage)
 
 A CLI tool for managing protobuf definitions across distributed Git repositories.
 

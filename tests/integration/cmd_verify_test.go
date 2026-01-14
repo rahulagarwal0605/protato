@@ -9,8 +9,8 @@ import (
 
 	"github.com/rahulagarwal0605/protato/cmd"
 	"github.com/rahulagarwal0605/protato/internal/git"
-	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/local"
+	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/tests/testhelpers"
 )
 

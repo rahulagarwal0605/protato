@@ -151,7 +151,9 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 - **Unit tests**: Place `*_test.go` files beside source files
 - **Integration tests**: Place in `tests/integration/`
 - **E2E tests**: Place in `tests/e2e/`
-- **Coverage**: Aim for >80% coverage on new code
+- **Coverage**: Aim for >80% coverage on new code (current overall: 46.9%)
+  - Core packages (`internal/utils`, `internal/git`, `internal/registry`, `internal/local`) exceed 80% ✅
+  - Areas needing improvement: `cmd` (5.5%), `internal/protoc` (32.0%)
 - **Run tests**: `make test-coverage` to see coverage report
 
 ### Commit Messages
