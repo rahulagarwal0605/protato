@@ -197,7 +197,7 @@ env:
 - name: Install Protato
   run: |
     PROTATO_VERSION="v0.2.0"  # Change version here
-    curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+    curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /tmp/protato-installer
     chmod +x /tmp/protato-installer
     sudo mv /tmp/protato-installer /usr/local/bin/protato
 ```
@@ -221,7 +221,7 @@ env:
   run: |
     # Download latest release (not recommended - use specific version instead)
     # The protato download script defaults to latest if PROTATO_VERSION is not set
-    curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+    curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /tmp/protato-installer
     chmod +x /tmp/protato-installer
     sudo mv /tmp/protato-installer /usr/local/bin/protato
 ```
@@ -336,7 +336,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           PROTATO_VERSION="${PROTATO_VERSION:-v1.0.0}"
-          curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /tmp/protato-installer
+          curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /tmp/protato-installer
           chmod +x /tmp/protato-installer
           sudo mv /tmp/protato-installer /usr/local/bin/protato
       - run: protato push

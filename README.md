@@ -45,10 +45,10 @@ Protato solves the protobuf distribution problem through a centralized Git-based
 
 ```bash
 # Download and run
-curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato | bash -s -- version
+curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh | bash -s -- version
 
 # Or install locally
-curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato -o /usr/local/bin/protato
+curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /usr/local/bin/protato
 chmod +x /usr/local/bin/protato
 protato version
 ```
