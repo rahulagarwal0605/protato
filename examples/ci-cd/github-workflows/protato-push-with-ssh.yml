@@ -24,6 +24,7 @@ jobs:
 
       - name: Install Protato
         run: |
+          set -euo pipefail
           # Download and install using protato download script
           # Uses PROTATO_VERSION from env (defaults to v1.0.2)
           curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /tmp/protato-installer
@@ -31,12 +32,13 @@ jobs:
           sudo mv /tmp/protato-installer /usr/local/bin/protato
           
           # Verify installation
-          protato --version
+          protato --version || { echo "❌ Error: protato installation failed"; exit 1; }
 
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROTATO_SSH_PRIVATE_KEY }}
+        continue-on-error: false
 
       - name: Configure SSH known hosts
         run: |
@@ -62,18 +64,23 @@ jobs:
           fi
 
       - name: Verify workspace
-        run: protato verify
+        run: |
+          set -euo pipefail
+          protato verify || { echo "❌ Error: Workspace verification failed"; exit 1; }
         env:
           PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
 
       - name: Push to registry
         run: |
+          set -euo pipefail
           echo "Pushing protos to registry using SSH..."
-          protato push
+          protato push || { echo "❌ Error: Push to registry failed"; exit 1; }
         env:
           PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
 
       - name: Verify push succeeded
-        run: protato list
+        run: |
+          set -euo pipefail
+          protato list || { echo "❌ Error: Failed to list projects after push"; exit 1; }
         env:
           PROTATO_REGISTRY_URL: ${{ steps.convert-url.outputs.ssh_url }}
