@@ -326,7 +326,7 @@ name: Push Protos
 on:
   push:
     paths:
-      - 'protos/**'
+      - '**/*.proto'
       - 'protato.yaml'
 
 jobs:
@@ -352,7 +352,7 @@ name: Verify Workspace
 on:
   pull_request:
     paths:
-      - 'protos/**'
+      - '**/*.proto'
 
 jobs:
   verify:
