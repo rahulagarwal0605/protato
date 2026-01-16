@@ -335,7 +335,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          PROTATO_VERSION="${PROTATO_VERSION:-v1.0.0}"
+          PROTATO_VERSION="${PROTATO_VERSION:-v1.0.2}"
           curl -fsSL https://raw.githubusercontent.com/rahulagarwal0605/protato/main/dl/protato.sh -o /tmp/protato-installer
           chmod +x /tmp/protato-installer
           sudo mv /tmp/protato-installer /usr/local/bin/protato
@@ -361,7 +361,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
       - run: |
-          PROTATO_VERSION="${PROTATO_VERSION:-v1.0.0}"
+          PROTATO_VERSION="${PROTATO_VERSION:-v1.0.2}"
           go install github.com/rahulagarwal0605/protato@${PROTATO_VERSION}
       - run: protato verify
         env:
