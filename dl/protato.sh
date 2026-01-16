@@ -125,14 +125,29 @@ protato_github_download() {
     
     # Extract
     mkdir -p "${PROTATO_EXE_DIR}"
-    tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}"
+    if ! tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}" 2>/dev/null; then
+        log_error "Failed to extract archive"
+        return 1
+    fi
     
     # Handle different archive structures
+    # The Makefile creates archives with 'protato' inside, not 'protato-linux-amd64'
     if [[ -f "${PROTATO_EXE_DIR}/${BINARY_NAME}" ]]; then
+        # Archive contains the full binary name
         mv "${PROTATO_EXE_DIR}/${BINARY_NAME}" "${PROTATO_EXE}"
     elif [[ -f "${PROTATO_EXE_DIR}/protato" ]]; then
-        # Already correct name
-        :
+        # Archive contains 'protato' - this is the expected structure from Makefile
+        mv "${PROTATO_EXE_DIR}/protato" "${PROTATO_EXE}"
+    elif [[ -f "${PROTATO_EXE_DIR}/protato.exe" ]]; then
+        # Windows binary
+        mv "${PROTATO_EXE_DIR}/protato.exe" "${PROTATO_EXE}"
+    else
+        log_error "Binary not found in archive. Expected one of:"
+        log_error "  - ${PROTATO_EXE_DIR}/${BINARY_NAME}"
+        log_error "  - ${PROTATO_EXE_DIR}/protato"
+        log_error "Archive contents:"
+        ls -la "${PROTATO_EXE_DIR}" >&2
+        return 1
     fi
     
     chmod +x "${PROTATO_EXE}"
@@ -149,22 +164,54 @@ protato_http_download() {
     trap "rm -rf '$temp_dir'" EXIT
     
     # Download
+    log_debug "Downloading from: $url"
     if command -v curl &>/dev/null; then
-        curl -fsSL "$url" -o "${temp_dir}/protato.tar.gz"
+        if ! curl -fsSL "$url" -o "${temp_dir}/protato.tar.gz"; then
+            log_error "Failed to download from $url"
+            log_error "HTTP status: $(curl -sSL -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 'unknown')"
+            return 1
+        fi
     elif command -v wget &>/dev/null; then
-        wget -q "$url" -O "${temp_dir}/protato.tar.gz"
+        if ! wget -q "$url" -O "${temp_dir}/protato.tar.gz"; then
+            log_error "Failed to download from $url"
+            return 1
+        fi
     else
         log_error "Neither curl nor wget found"
         return 1
     fi
     
+    # Verify archive exists and is not empty
+    if [[ ! -f "${temp_dir}/protato.tar.gz" ]] || [[ ! -s "${temp_dir}/protato.tar.gz" ]]; then
+        log_error "Downloaded archive is missing or empty"
+        return 1
+    fi
+    
     # Extract
     mkdir -p "${PROTATO_EXE_DIR}"
-    tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}"
+    if ! tar xzf "${temp_dir}/protato.tar.gz" -C "${PROTATO_EXE_DIR}" 2>/dev/null; then
+        log_error "Failed to extract archive"
+        return 1
+    fi
     
     # Handle different archive structures
+    # The Makefile creates archives with 'protato' inside, not 'protato-linux-amd64'
     if [[ -f "${PROTATO_EXE_DIR}/${BINARY_NAME}" ]]; then
+        # Archive contains the full binary name
         mv "${PROTATO_EXE_DIR}/${BINARY_NAME}" "${PROTATO_EXE}"
+    elif [[ -f "${PROTATO_EXE_DIR}/protato" ]]; then
+        # Archive contains 'protato' - this is the expected structure from Makefile
+        mv "${PROTATO_EXE_DIR}/protato" "${PROTATO_EXE}"
+    elif [[ -f "${PROTATO_EXE_DIR}/protato.exe" ]]; then
+        # Windows binary
+        mv "${PROTATO_EXE_DIR}/protato.exe" "${PROTATO_EXE}"
+    else
+        log_error "Binary not found in archive. Expected one of:"
+        log_error "  - ${PROTATO_EXE_DIR}/${BINARY_NAME}"
+        log_error "  - ${PROTATO_EXE_DIR}/protato"
+        log_error "Archive contents:"
+        ls -la "${PROTATO_EXE_DIR}" >&2
+        return 1
     fi
     
     chmod +x "${PROTATO_EXE}"
@@ -174,9 +221,11 @@ protato_http_download() {
 # Try all download methods
 protato_all_download() {
     # Try HTTP first (simplest, works for public repos)
-    if protato_http_download 2>/dev/null; then
+    if protato_http_download; then
         return 0
     fi
+    
+    log_debug "HTTP download failed, trying GitHub CLI..."
     
     # Try GitHub CLI
     if protato_github_download_enabled && protato_github_download; then
@@ -184,6 +233,8 @@ protato_all_download() {
     fi
     
     log_error "All download methods failed"
+    log_error "Tried to download: ${BINARY_NAME}.tar.gz for version ${PROTATO_VERSION}"
+    log_error "Release URL: https://github.com/${PROTATO_GITHUB_REPO}/releases/tag/${PROTATO_VERSION}"
     return 1
 }
 
