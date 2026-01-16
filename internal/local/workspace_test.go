@@ -64,36 +64,33 @@ func TestWorkspace_Init(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "initialize with force",
+			name: "initialize with force - complete override",
 			config: &Config{
-				Service: "test-service",
+				Service:      "new-service",
+				AutoDiscover: true,
 				Directories: DirectoryConfig{
-					Owned:  "proto",
-					Vendor: "vendor-proto",
+					Owned:  "new-proto",
+					Vendor: "new-vendor",
 				},
+				Projects: []string{"new-project"},
+				Ignores:  []string{"new-ignore"},
 			},
 			force:   true,
 			wantErr: false,
 			setupFunc: func(root string) {
-				// Create existing config
+				// Create existing config with different values
 				configPath := filepath.Join(root, "protato.yaml")
-				os.WriteFile(configPath, []byte("service: old-service\n"), 0644)
-			},
-		},
-		{
-			name: "fail on existing workspace without force",
-			config: &Config{
-				Service: "test-service",
-				Directories: DirectoryConfig{
-					Owned:  "proto",
-					Vendor: "vendor-proto",
-				},
-			},
-			force:   false,
-			wantErr: true,
-			setupFunc: func(root string) {
-				configPath := filepath.Join(root, "protato.yaml")
-				os.WriteFile(configPath, []byte("service: old-service\n"), 0644)
+				existingConfig := `service: old-service
+auto_discover: false
+directories:
+  owned: old-proto
+  vendor: old-vendor
+projects:
+  - old-project
+ignores:
+  - old-ignore
+`
+				os.WriteFile(configPath, []byte(existingConfig), 0644)
 			},
 		},
 	}
@@ -123,6 +120,39 @@ func TestWorkspace_Init(t *testing.T) {
 				vendorDir, _ := ws.VendorDir()
 				if !fileExists(vendorDir) {
 					t.Errorf("Vendor directory not created: %s", vendorDir)
+				}
+
+				// For force test, verify config was completely overridden (not merged)
+				if tt.name == "initialize with force - complete override" {
+					if ws.ServiceName() != "new-service" {
+						t.Errorf("Service was not overridden: got %s, want new-service", ws.ServiceName())
+					}
+					ownedDirName, _ := ws.OwnedDirName()
+					if ownedDirName != "new-proto" {
+						t.Errorf("OwnedDir was not overridden: got %s, want new-proto", ownedDirName)
+					}
+					vendorDirName, _ := ws.VendorDir()
+					expectedVendorPath := filepath.Join(tmpDir, "new-vendor")
+					if vendorDirName != expectedVendorPath {
+						t.Errorf("VendorDir was not overridden: got %s, want %s", vendorDirName, expectedVendorPath)
+					}
+					// Reload workspace to verify config file was written correctly
+					reloadedWs, err := Open(context.Background(), tmpDir)
+					if err != nil {
+						t.Fatalf("Failed to reload workspace: %v", err)
+					}
+					if reloadedWs.ServiceName() != "new-service" {
+						t.Errorf("Reloaded workspace Service was not overridden: got %s, want new-service", reloadedWs.ServiceName())
+					}
+					if !reloadedWs.config.AutoDiscover {
+						t.Errorf("AutoDiscover was not overridden: got %v, want true", reloadedWs.config.AutoDiscover)
+					}
+					if len(reloadedWs.config.Projects) != 1 || reloadedWs.config.Projects[0] != "new-project" {
+						t.Errorf("Projects were not overridden: got %v, want [new-project]", reloadedWs.config.Projects)
+					}
+					if len(reloadedWs.config.Ignores) != 1 || reloadedWs.config.Ignores[0] != "new-ignore" {
+						t.Errorf("Ignores were not overridden: got %v, want [new-ignore]", reloadedWs.config.Ignores)
+					}
 				}
 			}
 		})

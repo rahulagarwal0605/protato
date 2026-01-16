@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rahulagarwal0605/protato/internal/errors"
 	"github.com/rahulagarwal0605/protato/internal/local"
 	"github.com/rahulagarwal0605/protato/internal/logger"
 	"github.com/rahulagarwal0605/protato/internal/registry"
@@ -32,6 +33,12 @@ func (c *InitCmd) Run(globals *GlobalOptions, ctx context.Context) error {
 	repo, err := GetCurrentRepo(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Check if protato.yaml already exists - fail early before prompts
+	configPath := local.ConfigPath(repo.Root())
+	if _, err := os.Stat(configPath); err == nil && !c.Force {
+		return errors.ErrAlreadyInitialized
 	}
 
 	// Gather configuration (interactive or from flags)
@@ -274,7 +281,6 @@ func (c *InitCmd) promptOrShowIgnores(ctx context.Context, root string, reader *
 	}
 	return nil
 }
-
 
 // initWorkspace creates the protato workspace.
 func (c *InitCmd) initWorkspace(ctx context.Context, root string, cfg *local.Config) (local.WorkspaceInterface, error) {

@@ -46,30 +46,19 @@ type Workspace struct {
 
 // Init initializes a new workspace.
 func Init(ctx context.Context, root string, config *Config, force bool) (*Workspace, error) {
-	configPath := configPath(root)
-
-	// Check if already initialized
-	if _, err := os.Stat(configPath); err == nil && !force {
-		return nil, errors.ErrAlreadyInitialized
-	}
-
-	// Build config (merge with existing if force, otherwise use provided)
-	finalConfig, err := buildConfig(configPath, config, force)
-	if err != nil {
-		return nil, err
-	}
+	configPath := ConfigPath(root)
 
 	// Write config file
-	if err := writeConfig(configPath, finalConfig); err != nil {
+	if err := writeConfig(configPath, config); err != nil {
 		return nil, fmt.Errorf("write config: %w", err)
 	}
 
 	// Create directories
-	ownedDir, err := finalConfig.OwnedDir()
+	ownedDir, err := config.OwnedDir()
 	if err != nil {
 		return nil, fmt.Errorf("get owned directory: %w", err)
 	}
-	vendorDir, err := finalConfig.VendorDir()
+	vendorDir, err := config.VendorDir()
 	if err != nil {
 		return nil, fmt.Errorf("get vendor directory: %w", err)
 	}
@@ -82,66 +71,14 @@ func Init(ctx context.Context, root string, config *Config, force bool) (*Worksp
 
 	return &Workspace{
 		root:   root,
-		config: finalConfig,
+		config: config,
 	}, nil
 }
 
-// buildConfig creates or merges configuration based on force flag.
-func buildConfig(configPath string, config *Config, force bool) (*Config, error) {
-	if force {
-		return buildConfigWithMerge(configPath, config)
-	}
-	return config, nil
-}
-
-// buildConfigWithMerge merges config with existing config if it exists, otherwise uses provided config.
-func buildConfigWithMerge(configPath string, config *Config) (*Config, error) {
-	existingConfig, err := readConfig(configPath)
-	if err != nil {
-		// No existing config, use provided config
-		return config, nil
-	}
-
-	// Merge with existing config
-	return mergeConfig(existingConfig, config), nil
-}
-
-// mergeConfig merges new config into existing config.
-func mergeConfig(existing *Config, new *Config) *Config {
-	config := existing
-
-	// Update service if provided
-	if new.Service != "" {
-		config.Service = new.Service
-	}
-
-	// Update directories if provided
-	if new.Directories.Owned != "" {
-		config.Directories.Owned = new.Directories.Owned
-	}
-	if new.Directories.Vendor != "" {
-		config.Directories.Vendor = new.Directories.Vendor
-	}
-
-	// Merge projects if provided
-	if len(new.Projects) > 0 {
-		config.Projects = utils.MergeStringSlice(config.Projects, new.Projects)
-	}
-
-	// Auto-discover wins - use the provided value
-	config.AutoDiscover = new.AutoDiscover
-
-	// Merge ignores if provided
-	if len(new.Ignores) > 0 {
-		config.Ignores = utils.MergeStringSlice(config.Ignores, new.Ignores)
-	}
-
-	return config
-}
 
 // Open opens an existing workspace.
 func Open(ctx context.Context, root string) (*Workspace, error) {
-	configPath := configPath(root)
+	configPath := ConfigPath(root)
 
 	// Check if initialized
 	if utils.DirNotExists(configPath) {
@@ -184,8 +121,8 @@ func lockFilePath(projectDir, projectPath string) string {
 	return filepath.Join(projectDir, projectPath, constants.LockFileName)
 }
 
-// configPath returns the path to the config file in the given root directory.
-func configPath(root string) string {
+// ConfigPath returns the path to the config file in the given root directory.
+func ConfigPath(root string) string {
 	return filepath.Join(root, constants.ConfigFileName)
 }
 
@@ -519,7 +456,7 @@ func (ws *Workspace) AddOwnedProjects(projects []string) error {
 	}
 
 	// Write updated config
-	return writeConfig(configPath(ws.root), ws.config)
+	return writeConfig(ConfigPath(ws.root), ws.config)
 }
 
 // ReceiveProject starts receiving a project (into vendor directory).
