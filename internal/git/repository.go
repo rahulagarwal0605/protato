@@ -418,23 +418,10 @@ func (r *Repository) GetRemoteURL(ctx context.Context, remote string) (string, e
 	return r.executeGitOutput(ctx, "get remote url", "remote", "get-url", remote)
 }
 
-// GetUser gets the current Git user (name and email).
-// Checks environment variables first, then falls back to git config.
+// GetUser gets the current Git user (name and email) from git config.
 func (r *Repository) GetUser(ctx context.Context) (Author, error) {
 	var author Author
 
-	// Check GitHub Actions environment variables first
-	if name := os.Getenv("GITHUB_ACTOR"); name != "" {
-		author.Name = name
-		email := os.Getenv("GITHUB_ACTOR_EMAIL")
-		if email == "" {
-			return author, fmt.Errorf("GITHUB_ACTOR_EMAIL environment variable not set")
-		}
-		author.Email = email
-		return author, nil
-	}
-
-	// Fall back to git config
 	name, err := r.getGitConfig(ctx, "user.name")
 	if err != nil {
 		return author, fmt.Errorf("get user name: %w", err)
@@ -449,7 +436,6 @@ func (r *Repository) GetUser(ctx context.Context) (Author, error) {
 
 	return author, nil
 }
-
 
 // gitCmd is a helper for executing git commands.
 type gitCmd struct {

@@ -182,25 +182,6 @@ func TestGitRepository_ReadTree(t *testing.T) {
 func TestGitRepository_GetUser(t *testing.T) {
 	repoDir := setupTestGitRepo(t)
 
-	// Save and restore GITHUB_ACTOR env var to ensure we test git config path
-	origActor := os.Getenv("GITHUB_ACTOR")
-	origActorEmail := os.Getenv("GITHUB_ACTOR_EMAIL")
-	defer func() {
-		if origActor != "" {
-			os.Setenv("GITHUB_ACTOR", origActor)
-		} else {
-			os.Unsetenv("GITHUB_ACTOR")
-		}
-		if origActorEmail != "" {
-			os.Setenv("GITHUB_ACTOR_EMAIL", origActorEmail)
-		} else {
-			os.Unsetenv("GITHUB_ACTOR_EMAIL")
-		}
-	}()
-	// Unset GITHUB_ACTOR to test git config fallback
-	os.Unsetenv("GITHUB_ACTOR")
-	os.Unsetenv("GITHUB_ACTOR_EMAIL")
-
 	log := logger.Init()
 	ctx := logger.WithLogger(context.Background(), &log)
 	repo, err := git.Open(ctx, repoDir, git.OpenOptions{Bare: false})

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rahulagarwal0605/protato/internal/logger"
@@ -25,9 +27,10 @@ func testContext() context.Context {
 // =============================================================================
 
 type mockExecer struct {
-	runErr    error
-	output    []byte
-	outputErr error
+	runErr     error
+	output     []byte
+	outputErr  error
+	outputFunc func() ([]byte, error)
 }
 
 func (m *mockExecer) Run(cmd *exec.Cmd) error {
@@ -35,6 +38,9 @@ func (m *mockExecer) Run(cmd *exec.Cmd) error {
 }
 
 func (m *mockExecer) Output(cmd *exec.Cmd) ([]byte, error) {
+	if m.outputFunc != nil {
+		return m.outputFunc()
+	}
 	return m.output, m.outputErr
 }
 
@@ -1017,12 +1023,12 @@ func TestRepository_RevHash_WithMock(t *testing.T) {
 	ctx := testContext()
 
 	tests := []struct {
-		name      string
-		rev       string
-		mockOut   []byte
-		mockErr   error
-		wantHash  Hash
-		wantErr   bool
+		name     string
+		rev      string
+		mockOut  []byte
+		mockErr  error
+		wantHash Hash
+		wantErr  bool
 	}{
 		{
 			name:     "successful rev-parse",
@@ -1283,74 +1289,86 @@ func TestRepository_ReadTree_WithMock(t *testing.T) {
 	}
 }
 
-func TestRepository_GetUser_WithEnvVars(t *testing.T) {
+func TestRepository_GetUser_WithGitConfig(t *testing.T) {
 	ctx := testContext()
 
-	// Save and restore env vars
-	origActor := os.Getenv("GITHUB_ACTOR")
-	origEmail := os.Getenv("GITHUB_ACTOR_EMAIL")
-	defer func() {
-		os.Setenv("GITHUB_ACTOR", origActor)
-		os.Setenv("GITHUB_ACTOR_EMAIL", origEmail)
-	}()
-
-	t.Run("github actor with email", func(t *testing.T) {
-		os.Setenv("GITHUB_ACTOR", "testuser")
-		os.Setenv("GITHUB_ACTOR_EMAIL", "test@example.com")
-
-		mock := &mockExecer{}
-		repo := &Repository{exec: mock}
-
-		author, err := repo.GetUser(ctx)
-		if err != nil {
-			t.Fatalf("GetUser() error = %v", err)
-		}
-		if author.Name != "testuser" {
-			t.Errorf("Name = %v, want testuser", author.Name)
-		}
-		if author.Email != "test@example.com" {
-			t.Errorf("Email = %v, want test@example.com", author.Email)
-		}
-	})
-
-	t.Run("github actor without email", func(t *testing.T) {
-		os.Setenv("GITHUB_ACTOR", "testuser")
-		os.Setenv("GITHUB_ACTOR_EMAIL", "")
-
-		mock := &mockExecer{}
-		repo := &Repository{exec: mock}
-
-		_, err := repo.GetUser(ctx)
-		if err == nil {
-			t.Error("GetUser() expected error when GITHUB_ACTOR_EMAIL not set")
-		}
-	})
-
-	t.Run("fallback to git config", func(t *testing.T) {
-		os.Setenv("GITHUB_ACTOR", "")
-		os.Setenv("GITHUB_ACTOR_EMAIL", "")
-
-		// Mock returns user.name first, then user.email
+	t.Run("get user from git config", func(t *testing.T) {
+		// Mock that returns user.name first, then user.email
 		callCount := 0
-		mock := &mockExecer{}
+		mock := &mockExecer{
+			outputFunc: func() ([]byte, error) {
+				callCount++
+				if callCount == 1 {
+					return []byte("Test User\n"), nil
+				}
+				return []byte("test@example.com\n"), nil
+			},
+		}
 		repo := &Repository{
 			gitDir:  "/path/to/repo/.git",
 			rootDir: "/path/to/repo",
 			exec:    mock,
 		}
 
-		// Use a custom approach - mock will return different values
-		// First call: user.name, Second call: user.email
-		mock.output = []byte("Test User\n")
-		mock.outputErr = nil
+		author, err := repo.GetUser(ctx)
+		if err != nil {
+			t.Fatalf("GetUser() error = %v", err)
+		}
+		if author.Name != "Test User" {
+			t.Errorf("Name = %v, want Test User", author.Name)
+		}
+		if author.Email != "test@example.com" {
+			t.Errorf("Email = %v, want test@example.com", author.Email)
+		}
+		if callCount != 2 {
+			t.Errorf("Expected 2 git config calls, got %d", callCount)
+		}
+	})
 
-		// We can't easily test the two-call scenario with this simple mock,
-		// but we can at least test that it attempts to call git config
+	t.Run("error when user.name not set", func(t *testing.T) {
+		mock := &mockExecer{
+			outputFunc: func() ([]byte, error) {
+				return nil, fmt.Errorf("git config user.name failed")
+			},
+		}
+		repo := &Repository{
+			gitDir:  "/path/to/repo/.git",
+			rootDir: "/path/to/repo",
+			exec:    mock,
+		}
+
 		_, err := repo.GetUser(ctx)
-		// The mock only returns one value, so second call will also return "Test User"
-		// which is fine for this test
-		if err != nil && callCount > 0 {
-			t.Logf("GetUser() returned error (expected with simple mock): %v", err)
+		if err == nil {
+			t.Error("GetUser() expected error when user.name not set")
+		}
+		if !strings.Contains(err.Error(), "get user name") {
+			t.Errorf("Error message should mention 'get user name', got: %v", err)
+		}
+	})
+
+	t.Run("error when user.email not set", func(t *testing.T) {
+		callCount := 0
+		mock := &mockExecer{
+			outputFunc: func() ([]byte, error) {
+				callCount++
+				if callCount == 1 {
+					return []byte("Test User\n"), nil
+				}
+				return nil, fmt.Errorf("git config user.email failed")
+			},
+		}
+		repo := &Repository{
+			gitDir:  "/path/to/repo/.git",
+			rootDir: "/path/to/repo",
+			exec:    mock,
+		}
+
+		_, err := repo.GetUser(ctx)
+		if err == nil {
+			t.Error("GetUser() expected error when user.email not set")
+		}
+		if !strings.Contains(err.Error(), "get user email") {
+			t.Errorf("Error message should mention 'get user email', got: %v", err)
 		}
 	})
 }

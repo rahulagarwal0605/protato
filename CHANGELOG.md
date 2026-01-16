@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-01-16
+
+### Fixed
+- Fix CI/CD workflow failures by removing dependency on non-existent `GITHUB_ACTOR_EMAIL` environment variable
+- Simplify `GetUser()` to rely solely on git config (`user.name` and `user.email`)
+- Improve reliability in GitHub Actions workflows by using git config that workflows already configure
+
+### Changed
+- `GetUser()` now only reads from git config, removing GitHub Actions environment variable checks
+- More consistent behavior across all environments (local, CI/CD, etc.)
+
+## [1.0.1] - 2026-01-14
+
+### Fixed
+- Fix init force behavior to do complete override instead of merge
+- Move already-initialized check earlier in init flow for better UX
+- Simplify workspace initialization logic
+
 ## [1.0.0] - 2026-01-14
 
 ### Added
@@ -44,5 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File Management**: Track owned files and manage ignores
 - **Verification**: Verify workspace integrity
 
-[Unreleased]: https://github.com/rahulagarwal0605/protato/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/rahulagarwal0605/protato/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/rahulagarwal0605/protato/releases/tag/v1.0.2
+[1.0.1]: https://github.com/rahulagarwal0605/protato/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rahulagarwal0605/protato/releases/tag/v1.0.0
